@@ -2,7 +2,7 @@
  * public/req-detail.js
  *
  * Role: page-scoped script for the requirement detail page and the
- * "extract context from session" preview page. Handles three things:
+ * "extract context from session" preview page. Handles four things:
  *   1. Intercepts `data-extract-trigger` POST forms so the spawn runs
  *      in the background; polls /api/extract/job/:id and shows a brief
  *      3-second flash toast on each state transition. Persistent state
@@ -10,6 +10,9 @@
  *   2. Auto-poll on the preview page while the underlying job is still
  *      in `running` state — reloads once it transitions.
  *   3. Clipboard copy buttons (`data-copy-cmd`) for session commands.
+ *   4. `req-new-session-btn` triggers background `opencode run` with
+ *      the requirement's injection context; on success it renders a
+ *      copyable `opencode -s <id>` command next to the button.
  *
  * Why a separate file from public/app.js: app.js is a single-IIFE
  * report-page-only script that early-returns on other pages. Mixing
@@ -214,6 +217,98 @@
       setTimeout(tick, POLL_INTERVAL_MS)
     }
   }
+
+  // ------------------------------------------------------------------
+  // "另开新 session" buttons — POST /api/requirement/new-session which
+  // spawns a detached `opencode run "<context>"` and polls for the new
+  // session id. On success we render a copyable command next to the
+  // button (the user pastes it into their own terminal, the dashboard
+  // does NOT keep a PTY open).
+  // ------------------------------------------------------------------
+
+  function buildResultCommandEl(cmd) {
+    const code = document.createElement("code")
+    code.textContent = cmd
+
+    const copyBtn = document.createElement("button")
+    copyBtn.type = "button"
+    copyBtn.className = "req-copy-cmd-inline req-copy-cmd-inline-new-session"
+    copyBtn.setAttribute("data-copy-cmd", cmd)
+    copyBtn.title = "复制 \`" + cmd + "\` 到剪贴板"
+    copyBtn.textContent = "📋 复制"
+
+    const wrap = document.createElement("span")
+    wrap.appendChild(code)
+    wrap.appendChild(document.createTextNode(" "))
+    wrap.appendChild(copyBtn)
+    return wrap
+  }
+
+  function attachNewSessionHandler(btn) {
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault()
+      if (btn.disabled) return
+      const reqId = btn.getAttribute("data-req-id") || ""
+      if (!reqId) return
+      const resultSpan = document.querySelector(
+        ".req-new-session-result[data-req-id=\"" + cssEscape(reqId) + "\"]"
+      )
+      btn.disabled = true
+      const restoreBtn = function () { btn.disabled = false }
+      if (resultSpan) {
+        resultSpan.textContent = "创建中…"
+      }
+
+      const body = new URLSearchParams()
+      body.set("reqId", reqId)
+
+      fetch("/api/requirement/new-session", {
+        method: "POST",
+        body: body,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { status: res.status, data: data }
+          })
+        })
+        .then(function (r) {
+          if (r.status >= 200 && r.status < 300 && r.data && r.data.sessionId && r.data.command) {
+            if (resultSpan) {
+              resultSpan.textContent = ""
+              resultSpan.appendChild(buildResultCommandEl(r.data.command))
+            }
+          } else {
+            const msg = (r.data && r.data.error) ? r.data.error : ("HTTP " + r.status)
+            if (resultSpan) {
+              resultSpan.textContent = "✗ " + msg
+            }
+            restoreBtn()
+          }
+        })
+        .catch(function (err) {
+          const msg = (err && err.message) ? err.message : String(err)
+          if (resultSpan) {
+            resultSpan.textContent = "✗ " + msg
+          }
+          restoreBtn()
+        })
+    })
+  }
+
+  // Minimal CSS.escape polyfill — req ids are URL-safe today, but be
+  // defensive against any future character that needs escaping. The
+  // value is interpolated into a [data-req-id="..."] selector, so we
+  // only need to escape characters that would close the string or the
+  // attribute selector.
+  function cssEscape(s) {
+    if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") {
+      return CSS.escape(s)
+    }
+    return String(s).replace(/([\\"])/g, "\\$1")
+  }
+
+  document.querySelectorAll(".req-new-session-btn").forEach(attachNewSessionHandler)
 
   // ------------------------------------------------------------------
   // Clipboard copy: any element with `data-copy-cmd="..."` copies that

@@ -55,6 +55,7 @@ export interface Requirement {
   createdAt: number
   updatedAt: number
   metaPath?: string
+  backgroundPath?: string
   branchPath?: string
   testPath?: string
   notesPath?: string
@@ -327,6 +328,7 @@ async function loadRequirementFromDir(
   if (!st.isDirectory()) return null
 
   const metaPath = join(dirPath, "meta.md")
+  const backgroundPath = join(dirPath, "background.md")
   const branchPath = join(dirPath, "branch.md")
   const testPath = join(dirPath, "test.md")
   const notesPath = join(dirPath, "notes.md")
@@ -394,6 +396,7 @@ async function loadRequirementFromDir(
     createdAt,
     updatedAt,
     metaPath: metaPresent ? metaPath : undefined,
+    backgroundPath: existsSync(backgroundPath) ? backgroundPath : undefined,
     branchPath: existsSync(branchPath) ? branchPath : undefined,
     testPath: existsSync(testPath) ? testPath : undefined,
     notesPath: existsSync(notesPath) ? notesPath : undefined,
@@ -747,23 +750,33 @@ async function readFileSnippet(path: string | undefined, limit = 500): Promise<s
 
 /**
  * Build the agent-context preamble injected into a session that is bound
- * to a Hermes requirement. When the requirement is real (not the
- * synthetic default, not missing), the output also lists the absolute
- * paths of every known requirement file (branch / notes / test /
- * config-changes) so the receiving agent knows where to write if the
- * user asks it to update requirement state.
+ * to a Hermes requirement. The output is concise, background-first:
+ *   1. requirement title + status (always)
+ *   2. background.md content (up to 500 chars) — the why/what of the work
+ *   3. notes.md (current progress, up to 300 chars)
+ *   4. branch.md (branch / commit context, up to 300 chars)
+ *   5. absolute paths to all five known files so the agent knows where
+ *      to read further or write updates
+ *   6. a closing line that tells the agent NOT to start work and to wait
+ *      for the user to issue the next instruction
  *
- * Files that do not exist on disk are still listed by path; only their
- * content section is omitted (the path is what makes the agent able to
- * create them).
+ * test.md and config-changes.md are listed by path but their bodies are
+ * NOT inlined — the agent can read them on demand once the user gives it
+ * a concrete task. Files that do not exist on disk are still listed by
+ * path (the agent may create them).
+ *
+ * The DEFAULT_REQ_ID / "req not found" fallbacks return a minimal
+ * 4-line block that only carries the new closing instruction.
  */
 export async function buildInjectionContext(reqId: string): Promise<string> {
+  const closing =
+    "请阅读以上需求背景和进展信息。不要自行开始执行任何任务，等待用户下达具体任务安排。"
   if (reqId === DEFAULT_REQ_ID) {
     return [
       "【需求上下文】",
       "需求：默认需求",
       "状态：开发中",
-      "请基于以上需求上下文继续。",
+      closing,
     ].join("\n")
   }
   const hermes = await scanHermesRequirements()
@@ -773,7 +786,7 @@ export async function buildInjectionContext(reqId: string): Promise<string> {
       "【需求上下文】",
       "需求：默认需求",
       "状态：开发中",
-      "请基于以上需求上下文继续。",
+      closing,
     ].join("\n")
   }
   const lines: string[] = []
@@ -784,39 +797,59 @@ export async function buildInjectionContext(reqId: string): Promise<string> {
     // Prefer the per-record *Path populated by loadRequirementFromDir;
     // fall back to <reqDir>/<basename> so paths are always emitted, even
     // for files that don't exist yet (the agent may create them).
+    const backgroundFile = req.backgroundPath ?? join(req.reqDir, "background.md")
     const branchFile = req.branchPath ?? join(req.reqDir, "branch.md")
     const notesFile = req.notesPath ?? join(req.reqDir, "notes.md")
     const testFile = req.testPath ?? join(req.reqDir, "test.md")
     const configFile = req.configPath ?? join(req.reqDir, "config-changes.md")
+
+    lines.push("")
+    lines.push("需求背景：")
+    const background = await readFileSnippet(backgroundFile, 500)
+    if (background) {
+      lines.push(background)
+    } else {
+      lines.push(`（未提供 background.md，路径：${backgroundFile}）`)
+    }
+
+    lines.push("")
+    lines.push("当前进展：")
+    const notes = await readFileSnippet(notesFile, 300)
+    if (notes) {
+      lines.push(notes)
+    } else {
+      lines.push(`（未提供 notes.md，路径：${notesFile}）`)
+    }
+
+    lines.push("")
+    lines.push("分支与改动：")
+    const branch = await readFileSnippet(branchFile, 300)
+    if (branch) {
+      lines.push(branch)
+    } else {
+      lines.push(`（未提供 branch.md，路径：${branchFile}）`)
+    }
+
     lines.push("")
     lines.push("需求文件：")
+    lines.push(`  - 需求背景：${backgroundFile}`)
     lines.push(`  - 分支信息：${branchFile}`)
     lines.push(`  - 开发笔记：${notesFile}`)
     lines.push(`  - 测试范围：${testFile}`)
     lines.push(`  - 配置变更：${configFile}`)
-    lines.push("")
-    const branch = await readFileSnippet(branchFile)
-    if (branch) lines.push(`分支信息（${branchFile}）：\n${branch}`)
-    if (branch) lines.push("")
-    const notes = await readFileSnippet(notesFile)
-    if (notes) lines.push(`开发笔记（${notesFile}）：\n${notes}`)
-    if (notes) lines.push("")
-    const test = await readFileSnippet(testFile)
-    if (test) lines.push(`测试范围（${testFile}）：\n${test}`)
-    if (test) lines.push("")
-    const config = await readFileSnippet(configFile)
-    if (config) lines.push(`配置变更（${configFile}）：\n${config}`)
-    if (config) lines.push("")
   } else {
     // No reqDir on the record (should not happen for real Hermes
     // requirements, but stays defensive): fall back to the old behavior.
-    const branch = await readFileSnippet(req.branchPath)
-    if (branch) lines.push(`分支信息：${branch}`)
-    const notes = await readFileSnippet(req.notesPath)
-    if (notes) lines.push(`开发笔记：${notes}`)
+    const background = await readFileSnippet(req.backgroundPath, 500)
+    if (background) lines.push(`需求背景：${background}`)
+    const branch = await readFileSnippet(req.branchPath, 300)
+    if (branch) lines.push(`分支与改动：${branch}`)
+    const notes = await readFileSnippet(req.notesPath, 300)
+    if (notes) lines.push(`当前进展：${notes}`)
     const test = await readFileSnippet(req.testPath)
     if (test) lines.push(`测试范围：${test}`)
   }
-  lines.push("请基于以上需求上下文继续。你可以直接修改上述文件来更新需求信息。")
+  lines.push("")
+  lines.push(closing)
   return lines.join("\n")
 }

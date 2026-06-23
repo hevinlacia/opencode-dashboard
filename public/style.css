@@ -1971,6 +1971,26 @@ code {
 }
 
 /* ------------------------------------------------------------------------- */
+/* "另开新 session" result span — renders a copyable `opencode -s <id>`    */
+/* command next to the button after the server spawns the detached session. */
+/* ------------------------------------------------------------------------- */
+
+.req-new-session-result {
+  margin-left: 8px;
+}
+
+.req-new-session-result code {
+  background: var(--op-bg-soft, #181818);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.875rem;
+}
+
+.req-new-session-result .req-copy-cmd-inline {
+  margin-left: 4px;
+}
+
+/* ------------------------------------------------------------------------- */
 /* Settings page                                                              */
 /* ------------------------------------------------------------------------- */
 

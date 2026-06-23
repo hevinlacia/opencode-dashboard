@@ -7,6 +7,7 @@ import { upgradeWebSocket } from "@hono/node-server"
 import { WebSocketServer } from "ws"
 import { readFile, writeFile, appendFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
+import { spawn } from "node:child_process"
 import { join, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { scanReports, getReport, saveConfirmation, type Confirmation } from "./scanner.ts"
@@ -931,12 +932,13 @@ const RequirementDetailPage: FC<{
   unassociated: SessionInfo[]
   recommendations: SessionRecommendation[]
   extractHistory: ExtractHistoryRecord[]
+  backgroundContent?: string
   branchContent?: string
   notesContent?: string
   testContent?: string
   configContent?: string
   state?: RequirementState | null
-}> = ({ req, associated, unassociated, recommendations, extractHistory, branchContent, notesContent, testContent, configContent, state }) => {
+}> = ({ req, associated, unassociated, recommendations, extractHistory, backgroundContent, branchContent, notesContent, testContent, configContent, state }) => {
   const currentIdx = REQ_STATUSES.indexOf(req.status)
   const description = (req.description || "").trim()
   const canSwitch = !!req.reqDir
@@ -1002,10 +1004,8 @@ const RequirementDetailPage: FC<{
                     🤖 智能提取上下文 →
                   </button>
                 </form>
-                <form method="post" action="/api/requirement/new-session" class="req-session-inline-form">
-                  <input type="hidden" name="reqId" value={req.id} />
-                  <button type="submit" class="btn btn-secondary" title="为该需求再创建一个 session">另开新 session</button>
-                </form>
+                <button type="button" class="btn btn-secondary req-new-session-btn" data-req-id={req.id} title="为该需求再创建一个 session">另开新 session</button>
+                <span class="req-new-session-result" data-req-id={req.id}></span>
               </div>
             ) : (
               <div class="req-session-panel-empty">
@@ -1013,11 +1013,11 @@ const RequirementDetailPage: FC<{
                   该需求{isActive ? <> 当前状态 <span class={reqStatusBadgeClass(req.status)}>{req.status}</span>，</> : "尚"}未绑定任何 session。请选择：
                 </p>
                 <div class="req-session-panel-actions">
-                  <form method="post" action="/api/requirement/new-session" class="req-session-inline-form">
-                    <input type="hidden" name="reqId" value={req.id} />
-                    <button type="submit" class="btn btn-primary">新建并绑定 session</button>
-                    <span class="muted small" style="margin-left: 8px;">将运行 <code>opencode run -i</code> 并把新 session 关联到此需求</span>
-                  </form>
+                  <div class="req-session-inline-form">
+                    <button type="button" class="btn btn-primary req-new-session-btn" data-req-id={req.id}>新建并绑定 session</button>
+                    <span class="req-new-session-result" data-req-id={req.id}></span>
+                    <span class="muted small" style="margin-left: 8px;">将在后台运行 <code>opencode run</code> 并把新 session 关联到此需求</span>
+                  </div>
                   {unassociated.length > 0 ? (
                     <form method="post" action="/api/requirement/associate" class="req-session-inline-form">
                       <input type="hidden" name="reqId" value={req.id} />
@@ -1180,6 +1180,7 @@ const RequirementDetailPage: FC<{
         </section>
       ) : null}
 
+      <HermesFileSection title="需求背景" content={backgroundContent} />
       <HermesFileSection title="分支信息" content={branchContent} />
       <HermesFileSection title="开发笔记" content={notesContent} />
       <HermesFileSection title="测试范围" content={testContent} />
@@ -1248,10 +1249,10 @@ const RequirementDetailPage: FC<{
           </ul>
         )}
 
-        <form method="post" action="/api/requirement/new-session" class="req-form-actions" style="margin-top: 12px;">
-          <input type="hidden" name="reqId" value={req.id} />
-          <button type="submit" class="btn btn-primary">新建 Session</button>
-        </form>
+        <div class="req-form-actions" style="margin-top: 12px;">
+          <button type="button" class="btn btn-primary req-new-session-btn" data-req-id={req.id}>新建 Session</button>
+          <span class="req-new-session-result" data-req-id={req.id}></span>
+        </div>
 
         {unassociated.length > 0 ? (
           <form method="post" action="/api/requirement/associate" class="req-form-actions" style="margin-top: 12px;">
@@ -1637,7 +1638,8 @@ app.get("/requirement", async (c) => {
       return undefined
     }
   }
-  const [branchContent, notesContent, testContent, configContent] = await Promise.all([
+  const [backgroundContent, branchContent, notesContent, testContent, configContent] = await Promise.all([
+    readFileSafe(req.backgroundPath),
     readFileSafe(req.branchPath),
     readFileSafe(req.notesPath),
     readFileSafe(req.testPath),
@@ -1664,6 +1666,7 @@ app.get("/requirement", async (c) => {
       req={req}
       associated={associated}
       unassociated={unassociated}
+      backgroundContent={backgroundContent}
       branchContent={branchContent}
       notesContent={notesContent}
       testContent={testContent}
@@ -1675,16 +1678,77 @@ app.get("/requirement", async (c) => {
   )
 })
 
+/**
+ * POST /api/requirement/new-session
+ *
+ * Spawn `opencode run "<injection-context>" --title "<title>"` as a
+ * detached background process, then poll the session DB for the new
+ * session id. Once we have it, associate the new session with the
+ * requirement and return `{ sessionId, command }` as JSON.
+ *
+ * The user copies the returned `opencode -s <id>` command and pastes it
+ * into their terminal. This replaces the old behavior of redirecting to
+ * /session?new=1 (the web-terminal PTY path) — the copyable command
+ * works in any terminal without keeping a browser tab open.
+ *
+ * Errors:
+ *   400 — missing reqId
+ *   404 — requirement not found
+ *   504 — opencode did not register a new session within 15s
+ */
 app.post("/api/requirement/new-session", async (c) => {
   const form = await c.req.formData()
   const reqId = String(form.get("reqId") || "")
-  if (!reqId) return c.text("Missing reqId", 400)
-  const exists = await getRequirement(reqId)
-  if (!exists) return c.text("Requirement not found", 404)
-  // Do NOT pre-generate a session id here — see /requirement above.
-  // The /session?new=1 page will spawn `opencode run -i` and associate
-  // the real session id once opencode creates it.
-  return c.redirect(`/session?new=1&req=${encodeURIComponent(reqId)}&inject=1`, 303)
+  if (!reqId) return c.json({ error: "Missing reqId" }, 400)
+  const req = await getRequirement(reqId)
+  if (!req) return c.json({ error: "Requirement not found" }, 404)
+
+  const ctx = await buildInjectionContext(reqId)
+  const title = req.title || reqId
+  const startMs = Date.now()
+
+  // Spawn detached — the agent processes the context in the background
+  // and writes its own session record. We unref so the dashboard
+  // process can exit independently of the opencode child.
+  const child = spawn("opencode", ["run", ctx, "--title", title], {
+    detached: true,
+    stdio: "ignore",
+  })
+  child.unref()
+
+  // Poll for the newly created session id. clearSessionCache forces the
+  // next scanSessions() to re-query sqlite/CLI/fs so we see the new
+  // row the moment opencode commits it.
+  clearSessionCache()
+  const deadline = Date.now() + 15_000
+  let sessionId = ""
+  while (!sessionId && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500))
+    clearSessionCache()
+    const list = await scanSessions(true)
+    const candidate = list.find(
+      (s) => (s.created || 0) >= startMs,
+    )
+    if (candidate) {
+      sessionId = candidate.id
+      break
+    }
+  }
+
+  if (!sessionId) {
+    return c.json(
+      { error: "Session creation timed out — opencode may still be starting. Check the sessions list in a moment." },
+      504,
+    )
+  }
+
+  // Best-effort association: do not fail the response if persistence
+  // hiccups; the user can re-bind manually.
+  try {
+    await associateSession(reqId, sessionId)
+  } catch { /* noop */ }
+
+  return c.json({ sessionId, command: `opencode -s ${sessionId}` })
 })
 
 app.post("/api/requirement/associate", async (c) => {
