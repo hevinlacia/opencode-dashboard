@@ -68,12 +68,19 @@
       })
       const data = await res.json()
       if (data.ok) {
-        showToast(
-          mode === "confirm"
-            ? `✓ Confirmed ${ids.length} candidate(s): ${ids.join(", ")}`
-            : `✗ Rejected ${ids.length} candidate(s): ${ids.join(", ")}`,
-          "success"
-        )
+        if (data.executionTriggered) {
+          showToast(
+            `✓ Confirmed ${ids.length} candidate(s): ${ids.join(", ")} — execution fork started`,
+            "success"
+          )
+        } else {
+          showToast(
+            mode === "confirm"
+              ? `✓ Confirmed ${ids.length} candidate(s): ${ids.join(", ")}`
+              : `✗ Rejected ${ids.length} candidate(s): ${ids.join(", ")}`,
+            "success"
+          )
+        }
       } else {
         showToast("Error: " + (data.error || "unknown"), "error")
       }

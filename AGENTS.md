@@ -18,8 +18,13 @@ SSR process (no Vite / React build chain) and exposes:
 - The original **experience report** functionality (`/reports`, `/report?path=…`,
   `/api/confirm`) so candidates from `experience-summarizer` runs can still
   be reviewed and confirmed.
+- **Session marking & auto-summary** (`/api/experience/mark`,
+  `/api/experience/unmark`, `/api/experience/markers`) — users flag sessions
+  for deferred experience summarization; a background worker forks the session
+  after it goes idle ≥1 h, generates a report, and auto-executes confirmed
+  candidates.
 - JSON APIs for both (`/api/sessions`, `/api/session`, `/api/reports`,
-  `/api/report`, `/api/confirm`).
+  `/api/report`, `/api/confirm`, `/api/experience/mark`).
 
 Default port: `7331` (overridable via `PORT`).
 
@@ -37,6 +42,18 @@ Default port: `7331` (overridable via `PORT`).
   derived from user input on report endpoints.
 - `src/parser.ts` + `src/scanner.ts` — `experience-summary` markdown report
   parser and the report scanner (pre-existing functionality, untouched).
+- `src/experienceMarkers.ts` — persistent marker store for sessions the user
+  flagged for auto-summary. Mark, unmark, list, TTL eviction (7 days).
+- `src/experienceAutoSummary.ts` — background worker that polls the marker
+  store, waits for sessions to go idle ≥1 h, forks them to generate
+  experience reports, and triggers execution forks on user confirmation.
+- `src/experienceMarkers.ts` — persistent marker store for sessions flagged
+  by the user for deferred auto-summarization. Backed by
+  `~/.local/share/opencode-dashboard/experience-markers.json` (7-day TTL).
+- `src/experienceAutoSummary.ts` — background worker that polls the marker
+  store, waits for sessions to go idle ≥1 h, then forks them to generate
+  experience reports and execute confirmed candidates. Reuses
+  `sessionExtract.ts` for the spawn/fork/timeout/salvage infrastructure.
 - `public/terminal.js` — page-scoped browser script: loads xterm from
   `/vendor/xterm/*` and bridges the WebSocket.
 - `public/app.js` — page-scoped browser script: report confirm/reject UI.

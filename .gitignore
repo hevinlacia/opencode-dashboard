@@ -7,6 +7,7 @@ build/
 .cache/
 coverage/
 *.tsbuildinfo
+.worktrees/
 
 # Never commit secrets.
 .env

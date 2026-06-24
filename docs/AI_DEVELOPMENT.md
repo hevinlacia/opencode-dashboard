@@ -33,7 +33,10 @@ two things:
 | `GET /api/session?id=…` | Single session JSON | |
 | `GET /api/reports` | `ReportSummary[]` JSON | |
 | `GET /api/report?path=…` | `ParsedReport` JSON | |
-| `POST /api/confirm` | `{ ok, savedPath }` | Path gated by `resolveHandoffPath` |
+| `POST /api/confirm` | `{ ok, savedPath, executionTriggered }` | Path gated by `resolveHandoffPath`; auto-triggers execution fork if report has a marker |
+| `POST /api/experience/mark` | `{ ok, marker }` | Mark a session for auto-summary |
+| `POST /api/experience/unmark` | `{ ok, removed }` | Remove a marker |
+| `GET /api/experience/markers` | `{ markers[] }` | List markers, optional `?status=` filter |
 | `GET /ws/session-terminal?id=…` | WebSocket: PTY ↔ xterm | See §5 |
 | `GET /static/*` | `public/` files | `..` rejected |
 | `GET /vendor/xterm/xterm.css` | `@xterm/xterm/css/xterm.css` | Cache-Control: 1 h |
@@ -58,6 +61,8 @@ opencode-dashboard/
 │   ├── paths.ts            # resolveHandoffPath (single gate for report paths)
 │   ├── parser.ts           # experience-summary markdown → structured candidates
 │   ├── scanner.ts          # report scanner + saveConfirmation
+│   ├── experienceMarkers.ts # persistent marker store (mark/unmark/list/TTL)
+│   ├── experienceAutoSummary.ts # background worker (idle detect → fork → summarize → execute)
 │   ├── views/              # (placeholder for future view fragments)
 │   ├── client/             # (placeholder; current client code lives in public/)
 │   └── public/             # (placeholder; real assets live in /public)

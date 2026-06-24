@@ -94,6 +94,19 @@ import {
   getExtractHistoryForRequirement,
   type ExtractHistoryRecord,
 } from "./extractHistory.ts"
+import {
+  initMarkers,
+  markSession,
+  unmarkSession,
+  getMarker,
+  listMarkers,
+  type ExperienceMarker,
+  type MarkerStatus,
+} from "./experienceMarkers.ts"
+import {
+  startAutoSummaryWorker,
+  triggerExecutionForMarker,
+} from "./experienceAutoSummary.ts"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -2455,7 +2468,59 @@ app.post("/api/notifications/mark-read", (c) => {
   return c.json({ ok: true })
 })
 
-// API: confirm or reject candidates (unchanged)
+// ---------------------------------------------------------------------------
+// Experience marker routes (manual session marking for auto-summary)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/experience/mark
+ * Body (JSON): { sessionId, note? }
+ *
+ * Mark a session for auto experience summarization. The background
+ * worker will fork the session and generate a report once it has been
+ * idle for ≥1 hour.
+ */
+app.post("/api/experience/mark", async (c) => {
+  const body = await c.req.json().catch(() => null) ?? {}
+  const sessionId = String(body.sessionId || "")
+  if (!sessionId) return c.json({ error: "Missing sessionId" }, 400)
+  if (!isValidSessionId(sessionId)) return c.json({ error: "Invalid sessionId" }, 400)
+  const note = typeof body.note === "string" ? body.note : undefined
+  const marker = await markSession(sessionId, { note })
+  return c.json({ ok: true, marker })
+})
+
+/**
+ * POST /api/experience/unmark
+ * Body (JSON): { sessionId }
+ *
+ * Remove a marker. No-op if the session was not marked.
+ */
+app.post("/api/experience/unmark", async (c) => {
+  const body = await c.req.json().catch(() => null) ?? {}
+  const sessionId = String(body.sessionId || "")
+  if (!sessionId) return c.json({ error: "Missing sessionId" }, 400)
+  if (!isValidSessionId(sessionId)) return c.json({ error: "Invalid sessionId" }, 400)
+  const removed = await unmarkSession(sessionId)
+  return c.json({ ok: true, removed })
+})
+
+/**
+ * GET /api/experience/markers
+ *
+ * List all markers, optionally filtered by `?status=<status>`.
+ */
+app.get("/api/experience/markers", (c) => {
+  const statusParam = c.req.query("status") as MarkerStatus | undefined
+  const markers = listMarkers(statusParam)
+  return c.json({ markers })
+})
+
+// API: confirm or reject candidates.
+// Extended: if the confirmed report has an associated marker (i.e. it
+// was auto-generated from a marked session), trigger the execution fork
+// for the confirmed candidate IDs so the user's accepted items get
+// implemented without leaving the dashboard.
 app.post("/api/confirm", async (c) => {
   const body = await c.req.json<Confirmation>()
   const reportPath = resolveHandoffPath(body.reportPath)
@@ -2472,7 +2537,23 @@ app.post("/api/confirm", async (c) => {
   }
 
   const savedPath = await saveConfirmation(confirmation)
-  return c.json({ ok: true, savedPath })
+
+  // If this report came from a marked session and the user confirmed
+  // candidates, trigger the execution fork. The fork runs in the
+  // background; the marker's status tracks progress.
+  let executionTriggered = false
+  if (confirmation.mode === "confirm" && confirmation.confirmedIds.length > 0) {
+    // Find a marker whose reportPath matches this report.
+    const allMarkers = listMarkers("summarized")
+    const matched = allMarkers.find((m) => m.reportPath === reportPath)
+    if (matched) {
+      // Fire and forget — the marker store tracks the fork's progress.
+      void triggerExecutionForMarker(matched.sessionId, confirmation.confirmedIds).catch(() => {})
+      executionTriggered = true
+    }
+  }
+
+  return c.json({ ok: true, savedPath, executionTriggered })
 })
 
 // API: list reports (JSON, unchanged)
@@ -2679,6 +2760,11 @@ const port = parseInt(process.env.PORT || "7331", 10)
 // request to /api/notifications returns the saved state.
 await initNotifications()
 await initConfig()
+await initMarkers()
+
+// Start the background worker that polls for marked sessions and
+// triggers auto-summary forks once sessions are idle ≥1 hour.
+startAutoSummaryWorker()
 
 serve({ fetch: app.fetch, websocket: { server: wss }, port }, (info) => {
   console.log(`OpenCode Dashboard running at http://localhost:${info.port}`)
