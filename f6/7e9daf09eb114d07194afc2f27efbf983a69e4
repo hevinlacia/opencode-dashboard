@@ -1,0 +1,33 @@
+src/config.ts
+  b2f1772a8403ae0b 36-41,56,89,104,109
+public/config.js
+  b2f1772a8403ae0b 28
+public/style.css
+  b2f1772a8403ae0b 130-131,2049,2051-2060,2064-2065,2068-2076,2082-2083,2089,2093,2098,2102-2103,2108-2112,2114,2118,2120-2122
+src/autoExtractScheduler.ts
+  b2f1772a8403ae0b 1-433
+src/server.tsx
+  b2f1772a8403ae0b 110-112,124,160-161,170-173,2106-2120,2175,2788-2793
+tests/autoExtractScheduler.test.ts
+  b2f1772a8403ae0b 1-225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "f67e9daf09eb114d07194afc2f27efbf983a69e4",
+  "prompts": {
+    "b2f1772a8403ae0b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_10311220effeoiMk9k5muRGh1L",
+        "model": "litellm-local/glm-latest-auto"
+      },
+      "human_author": "hevinlacia",
+      "messages": [],
+      "total_additions": 1548,
+      "total_deletions": 829,
+      "accepted_lines": 743,
+      "overriden_lines": 0
+    }
+  }
+}
