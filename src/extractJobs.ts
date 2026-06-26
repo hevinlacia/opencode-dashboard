@@ -49,6 +49,7 @@ import {
   type ExtractResult,
   type RunExtractOptions,
 } from "./sessionExtract.ts"
+import { updateSessionTitle } from "./sessions.ts"
 import {
   salvageFromFork,
   type SalvageResult,
@@ -487,6 +488,13 @@ async function finalizeJob(jobId: string, result: ExtractResult): Promise<void> 
         const adoptDesc = await applyAutoAdopt(j)
         const hasChanges = j.autoResult != null &&
           (j.autoResult.updates.length > 0 || j.autoResult.appends.length > 0)
+        // Update session title with the extraction summary so the user
+        // can see at a glance what this session is about and that it
+        // has been extracted.
+        const summary = j.autoResult?.summary?.trim()
+        if (summary) {
+          void updateSessionTitle(j.sessionId, summary)
+        }
         updateNotification(j._notificationId, {
           title: hasChanges
             ? `✓ 定时提取已自动采纳（${dur}s）`
@@ -551,6 +559,10 @@ async function finalizeJob(jobId: string, result: ExtractResult): Promise<void> 
         const adoptDesc = await applyAutoAdopt(j)
         const hasChanges = j.autoResult != null &&
           (j.autoResult.updates.length > 0 || j.autoResult.appends.length > 0)
+        const summary = j.autoResult?.summary?.trim()
+        if (summary) {
+          void updateSessionTitle(j.sessionId, summary)
+        }
         updateNotification(j._notificationId, {
           title: hasChanges
             ? `✓ 定时提取已自动采纳（fork 救回，${dur}s）`

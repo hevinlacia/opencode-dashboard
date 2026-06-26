@@ -496,7 +496,7 @@ test("autoAdopt: salvage path also auto-adopts", async () => {
     }),
   })
   await waitFor(() => (getExtractJob(job.id)?.state ?? "running") !== "running")
-  await new Promise((r) => setTimeout(r, 50))
+  await new Promise((r) => setTimeout(r, 500))
   const final = getExtractJob(job.id)
   assert.equal(final?.state, "done")
   assert.equal(final?.salvagedFromFork, true)

@@ -3,6 +3,10 @@
  * `~/.local/share/opencode/opencode.db`, with a CLI fallback and a
  * filesystem fallback derived from `~/.local/share/opencode/storage/session_diff/*.json`.
  *
+ * Also provides `updateSessionTitle()` — the sole write operation to
+ * opencode.db, used by the auto-extract pipeline to update a session's
+ * title based on the extraction summary.
+ *
  * Intentionally avoids reading any .env / secret files. The CLI and
  * `sqlite3` invocations never shell-eval user-controlled content; the
  * fallback only inspects file names and mtime.
@@ -425,6 +429,71 @@ export async function scanSessions(force = false, maxAgeMs?: number): Promise<Se
 
 export function clearSessionCache(): void {
   cache = null
+}
+
+/**
+ * Update a session's title in opencode's SQLite database.
+ *
+ * Uses the same `.param set` stdin-feeding protocol as `forkSalvage.ts`
+ * for SQL-injection-safe parameter binding. After a successful write,
+ * the session cache is cleared so the next `scanSessions()` reflects
+ * the new title.
+ *
+ * Constraints:
+ *   - Only writes to the fixed `DEFAULT_DB_PATH`.
+ *   - Session id is validated via `SESSION_ID_RE` before the query.
+ *   - Title is truncated to 200 chars (matching `safeTruncate` on read).
+ *   - Never throws; errors are silently swallowed (best-effort update).
+ */
+export async function updateSessionTitle(sessionId: string, title: string): Promise<boolean> {
+  if (!SESSION_ID_RE.test(sessionId)) return false
+  const trimmed = title.trim()
+  if (!trimmed) return false
+  const safeTitle = trimmed.length > 200 ? trimmed.slice(0, 199) + "…" : trimmed
+  if (!existsSync(DEFAULT_DB_PATH)) return false
+
+  return new Promise<boolean>((resolve) => {
+    let proc: ReturnType<typeof spawn>
+    try {
+      proc = spawn("sqlite3", [DEFAULT_DB_PATH], {
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+    } catch {
+      resolve(false)
+      return
+    }
+
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL") } catch { /* noop */ }
+    }, SQLITE_TIMEOUT_MS)
+
+    proc.on("error", () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+    proc.on("close", (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        clearSessionCache()
+        resolve(true)
+      } else {
+        resolve(false)
+      }
+    })
+
+    const script =
+      `.param init\n` +
+      `.param set :id ${JSON.stringify(sessionId)}\n` +
+      `.param set :title ${JSON.stringify(safeTitle)}\n` +
+      `UPDATE session SET title = :title WHERE id = :id;\n` +
+      `.quit\n`
+    try {
+      proc.stdin?.write(script)
+      proc.stdin?.end()
+    } catch {
+      // close handler will resolve(false).
+    }
+  })
 }
 
 export async function getSession(id: string): Promise<SessionInfo | null> {

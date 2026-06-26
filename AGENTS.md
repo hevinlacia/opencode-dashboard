@@ -76,10 +76,13 @@ Default port: `7331` (overridable via `PORT`).
    is called. No `..` is ever spliced into a path.
 3. **SQLite access uses a fixed query and argument substitution by
    the binary, not string interpolation.** The query in
-   `src/sessions.ts#SQLITE_QUERY` is the only SQL ever issued; the only
+   `src/sessions.ts#SQLITE_QUERY` is the only **read** SQL ever issued; the only
    runtime input is the DB path (a constant in the same file) and the
    `-json` output flag. Do not add user-driven `WHERE` clauses or string
-   concatenation to it.
+   concatenation to it. The sole exception is `updateSessionTitle()` in
+   `src/sessions.ts`, which issues a parameterized `UPDATE session SET title`
+   using the same `.param set` stdin protocol as `forkSalvage.ts`. No other
+   write SQL is permitted.
 4. **Session id format is `^ses_[A-Za-z0-9]+$`.** Validate via
    `isValidSessionId` (or `SESSION_ID_RE.test(id)`) **before** any PTY
    spawn, before any CLI call, and before any URL builder. The detail page
