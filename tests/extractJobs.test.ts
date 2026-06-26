@@ -421,6 +421,10 @@ test("autoAdopt: writes file updates to reqDir on successful auto-extract", asyn
     salvageFn: noSalvage,
   })
   await waitFor(() => (getExtractJob(job.id)?.state ?? "running") !== "running")
+  // finalizeJob is async — the job state flips to "done" synchronously
+  // but updateNotification runs after applyAutoAdopt awaits. Give it a
+  // moment to settle before checking notification content.
+  await new Promise((r) => setTimeout(r, 50))
   const final = getExtractJob(job.id)
   assert.equal(final?.state, "done")
   assert.equal(final?.autoAdopt, true)
@@ -454,6 +458,7 @@ test("autoAdopt: notification says 'no changes' when output has no updates", asy
     salvageFn: noSalvage,
   })
   await waitFor(() => (getExtractJob(job.id)?.state ?? "running") !== "running")
+  await new Promise((r) => setTimeout(r, 50))
   const final = getExtractJob(job.id)
   assert.equal(final?.state, "done")
   const notifs = getNotifications()
@@ -491,6 +496,7 @@ test("autoAdopt: salvage path also auto-adopts", async () => {
     }),
   })
   await waitFor(() => (getExtractJob(job.id)?.state ?? "running") !== "running")
+  await new Promise((r) => setTimeout(r, 50))
   const final = getExtractJob(job.id)
   assert.equal(final?.state, "done")
   assert.equal(final?.salvagedFromFork, true)
@@ -522,6 +528,7 @@ test("autoAdopt: notification has no actionHref (no preview page needed)", async
     salvageFn: noSalvage,
   })
   await waitFor(() => (getExtractJob(job.id)?.state ?? "running") !== "running")
+  await new Promise((r) => setTimeout(r, 50))
   const notifs = getNotifications()
   const notif = notifs.find((n) => n.jobId === job.id)
   assert.ok(notif)

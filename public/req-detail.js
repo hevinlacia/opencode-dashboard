@@ -167,6 +167,15 @@
             flashToast({ state: "running", title: "已有相同 session 的任务在跑", subtitle: "继续跟踪现有任务" })
           }
           pollJob(jobId)
+        } else if (r.status === 202 && r.data && r.data.queued) {
+          // Queued by the per-requirement delay queue.
+          var mins = r.data.delayMs ? Math.round(r.data.delayMs / 60000) : 5
+          var pos = r.data.queuePosition != null ? "（第 " + (r.data.queuePosition + 1) + " 位）" : ""
+          flashToast({
+            state: "running",
+            title: "⏳ 智能提取已排队" + pos,
+            subtitle: "预计 " + mins + " 分钟后自动开始，完成后在 🔔 通知中心查看",
+          })
         } else if (r.status === 409 && r.data && r.data.message) {
           // Debounce or no-new-content rejection from the server.
           flashToast({ state: "failed", title: "已跳过", subtitle: r.data.message })

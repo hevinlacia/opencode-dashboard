@@ -62,6 +62,7 @@ import {
   JobConflictError,
   type ExtractJob,
 } from "./extractJobs.ts"
+import { enqueueAutoExtract } from "./extractQueue.ts"
 import {
   initNotifications,
   getNotifications,
@@ -2269,14 +2270,24 @@ app.post("/api/requirement/auto-extract", async (c) => {
   const cfg = await getConfig()
 
   try {
-    const job = createExtractJob({
+    const result = enqueueAutoExtract({
       reqId,
       sessionId,
       prompt,
-      mode: "auto",
       model: cfg.extractModel,
     })
-    return c.json({ jobId: job.id, state: job.state }, 202)
+    if (result.status === "immediate") {
+      return c.json({ jobId: result.jobId, state: "running" }, 202)
+    }
+    // Queued — return 202 with scheduled time so the client can show
+    // an estimated start time in the toast.
+    return c.json({
+      queued: true,
+      scheduledAt: result.scheduledAt,
+      delayMs: result.delayMs,
+      queuePosition: result.queuePosition,
+      sessionId,
+    }, 202)
   } catch (err) {
     if (err instanceof JobConflictError) {
       return c.json({ error: "conflict", jobId: err.existingJobId }, 409)
