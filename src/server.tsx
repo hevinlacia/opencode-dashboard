@@ -1143,6 +1143,22 @@ const RequirementDetailPage: FC<{
                           提取上下文 →
                         </button>
                       </form>
+                      <form
+                        method="post"
+                        action="/api/requirement/auto-extract"
+                        class="req-extract-trigger-form req-extract-trigger-inline"
+                        data-extract-trigger=""
+                      >
+                        <input type="hidden" name="reqId" value={req.id} />
+                        <input type="hidden" name="sessionId" value={s.id} />
+                        <button
+                          type="submit"
+                          class="muted small req-extract-link-inline"
+                          title="让 agent 读取需求上下文文件，根据 session 内容判断哪些文件需要更新"
+                        >
+                          🤖 智能提取 →
+                        </button>
+                      </form>
                     </li>
                   ))}
                 </ul>
