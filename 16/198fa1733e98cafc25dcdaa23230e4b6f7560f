@@ -1,0 +1,33 @@
+src/extractJobs.ts
+  da8e75f51d1baf69 11-15,19-20,38-39,100-110,131-138,146-152,155-169,221-231,277-278,287-288,291,297,324-365,384-387,405-432,463-467,470-487
+tests/extractJobs.test.ts
+  da8e75f51d1baf69 24,29-30,374-575
+tests/sessionRecommendations.test.ts
+  da8e75f51d1baf69 132-154
+src/autoExtractScheduler.ts
+  da8e75f51d1baf69 309-310,317-318
+src/server.tsx
+  da8e75f51d1baf69 90,1729-1733
+src/sessionRecommendations.ts
+  da8e75f51d1baf69 11,31-33,124-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "16198fa1733e98cafc25dcdaa23230e4b6f7560f",
+  "prompts": {
+    "da8e75f51d1baf69": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0fe645b86ffe1DNHqVrZujBVr6",
+        "model": "litellm-local/glm-latest-auto"
+      },
+      "human_author": "hevinlacia",
+      "messages": [],
+      "total_additions": 1234,
+      "total_deletions": 42,
+      "accepted_lines": 412,
+      "overriden_lines": 0
+    }
+  }
+}
