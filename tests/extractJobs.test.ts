@@ -19,7 +19,10 @@ import { strict as assert } from "node:assert"
 import {
   createExtractJob,
   findRunningJobForSession,
+  findRecentJobForSession,
   getExtractJob,
+  checkExtractGuard,
+  EXTRACT_DEBOUNCE_MS,
   JobConflictError,
   JOB_MAX_RUNNING_MS,
   _resetExtractJobs,
@@ -572,4 +575,111 @@ test("zombie reaper: does not affect jobs still within timeout", () => {
   const running = findRunningJobForSession("ses_zombie222222222")
   assert.ok(running)
   assert.equal(running!.state, "running")
+})
+
+// ---------------------------------------------------------------------------
+// Extract guard tests (debounce + no-new-content)
+// ---------------------------------------------------------------------------
+
+test("findRecentJobForSession: returns most recent job within window", async () => {
+  _resetExtractJobs()
+  const job = createExtractJob({
+    reqId: "req-recent-1",
+    sessionId: "ses_recentjob111111",
+    prompt: "p",
+    runFn: fakeRunner({ stdout: "ok", stderr: "", exitCode: 0, durationMs: 1, timedOut: false }),
+    salvageFn: noSalvage,
+  })
+  await waitFor(() => getExtractJob(job.id)?.state === "done")
+  const found = findRecentJobForSession("ses_recentjob111111", EXTRACT_DEBOUNCE_MS)
+  assert.ok(found)
+  assert.equal(found!.id, job.id)
+})
+
+test("findRecentJobForSession: returns null outside window", async () => {
+  _resetExtractJobs()
+  const job = createExtractJob({
+    reqId: "req-recent-2",
+    sessionId: "ses_recentjob222222",
+    prompt: "p",
+    runFn: fakeRunner({ stdout: "ok", stderr: "", exitCode: 0, durationMs: 1, timedOut: false }),
+    salvageFn: noSalvage,
+    nowFn: () => Date.now() - EXTRACT_DEBOUNCE_MS - 60_000,
+  })
+  await waitFor(() => getExtractJob(job.id)?.state === "done")
+  const found = findRecentJobForSession("ses_recentjob222222", EXTRACT_DEBOUNCE_MS)
+  assert.equal(found, null)
+})
+
+test("checkExtractGuard: allows first-time extract (no history)", () => {
+  const result = checkExtractGuard({
+    recentJob: null,
+    lastExtract: null,
+    sessionUpdated: 0,
+    now: 1_000_000,
+  })
+  assert.equal(result.ok, true)
+})
+
+test("checkExtractGuard: rejects when recent job is within debounce window", () => {
+  const now = 1_000_000
+  const recentJob = { startedAt: now - 30_000 } as any
+  const result = checkExtractGuard({
+    recentJob,
+    lastExtract: null,
+    sessionUpdated: 0,
+    now,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "debounce")
+  assert.match(result.message, /30秒前刚触发过提取/)
+})
+
+test("checkExtractGuard: allows when recent job is outside debounce window", () => {
+  const now = 1_000_000
+  const recentJob = { startedAt: now - EXTRACT_DEBOUNCE_MS - 1000 } as any
+  const result = checkExtractGuard({
+    recentJob,
+    lastExtract: null,
+    sessionUpdated: 0,
+    now,
+  })
+  assert.equal(result.ok, true)
+})
+
+test("checkExtractGuard: rejects no-new-content when session not updated since last extract", () => {
+  const lastExtractDoneAt = 1_000_000
+  const result = checkExtractGuard({
+    recentJob: null,
+    lastExtract: { doneAt: lastExtractDoneAt, mode: "auto" },
+    sessionUpdated: lastExtractDoneAt,
+    now: lastExtractDoneAt + 600_000,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "no-new-content")
+  assert.match(result.message, /无新对话/)
+})
+
+test("checkExtractGuard: allows when session has new content since last extract", () => {
+  const lastExtractDoneAt = 1_000_000
+  const result = checkExtractGuard({
+    recentJob: null,
+    lastExtract: { doneAt: lastExtractDoneAt, mode: "summary" },
+    sessionUpdated: lastExtractDoneAt + 60_000,
+    now: lastExtractDoneAt + 600_000,
+  })
+  assert.equal(result.ok, true)
+})
+
+test("checkExtractGuard: debounce takes priority over no-new-content", () => {
+  const now = 1_000_000
+  const recentJob = { startedAt: now - 10_000 } as any
+  const result = checkExtractGuard({
+    recentJob,
+    lastExtract: { doneAt: now - 20_000, mode: "auto" },
+    sessionUpdated: now - 20_000,
+    now,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, "debounce")
 })

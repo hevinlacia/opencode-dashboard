@@ -18,6 +18,10 @@
  *   - findRunningJobForSession(sessionId) → for the mutex/UI restore.
  *   - JOB_MAX_RUNNING_MS → max wall-clock for a running job before the
  *     zombie reaper force-fails it.
+ *   - findRecentJobForSession(sessionId, withinMs) → most recent job
+ *     for a session within the time window (for debounce).
+ *   - checkExtractGuard(opts) → pure guard for debounce + no-new-content.
+ *   - EXTRACT_DEBOUNCE_MS → debounce window (5 min).
  *   - _resetExtractJobs() → test-only reset of the singleton state.
  *
  * Constraints / safety:
@@ -187,6 +191,82 @@ export function findRunningJobForSession(sessionId: string): ExtractJob | null {
     if (j.state === "running" && j.sessionId === sessionId) return j
   }
   return null
+}
+
+/**
+ * Return the most recent job (any state) for `sessionId` that was
+ * started within `withinMs` ago. Used for debounce: prevents rapid
+ * re-triggering of extracts for the same session.
+ */
+export function findRecentJobForSession(sessionId: string, withinMs: number): ExtractJob | null {
+  evictStale(Date.now())
+  const now = Date.now()
+  let best: ExtractJob | null = null
+  for (const j of _jobs.values()) {
+    if (j.sessionId !== sessionId) continue
+    if (now - j.startedAt > withinMs) continue
+    if (!best || j.startedAt > best.startedAt) best = j
+  }
+  return best
+}
+
+// ---------------------------------------------------------------------------
+// Extract guard (debounce + no-new-content)
+// ---------------------------------------------------------------------------
+
+/** Debounce window: prevent re-triggering extracts within this period. */
+export const EXTRACT_DEBOUNCE_MS = 5 * 60 * 1000
+
+export interface ExtractGuardResult {
+  ok: boolean
+  reason: string
+  message: string
+}
+
+/**
+ * Pure guard function: decide whether a new extract should be allowed.
+ *
+ * Two checks:
+ *   1. **Debounce**: if a job was started within `debounceMs` ago, reject.
+ *   2. **No new content**: if the session was successfully extracted
+ *      before and `sessionUpdated` hasn't advanced past `lastExtractDoneAt`,
+ *      reject — there's nothing new to extract.
+ *
+ * Both checks are skipped when their inputs are null (no recent job /
+ * no prior extract), so the guard degrades to "allow" for first-time
+ * extracts.
+ */
+export function checkExtractGuard(opts: {
+  recentJob: ExtractJob | null
+  lastExtract: { doneAt: number; mode: string } | null
+  sessionUpdated: number
+  now: number
+  debounceMs?: number
+}): ExtractGuardResult {
+  const debounceMs = opts.debounceMs ?? EXTRACT_DEBOUNCE_MS
+
+  // 1. Debounce: a job was started very recently (within the debounce window).
+  if (opts.recentJob && opts.now - opts.recentJob.startedAt < debounceMs) {
+    const elapsed = Math.round((opts.now - opts.recentJob.startedAt) / 1000)
+    return {
+      ok: false,
+      reason: "debounce",
+      message: `${elapsed}秒前刚触发过提取，${Math.ceil((debounceMs - (opts.now - opts.recentJob.startedAt)) / 60_000)}分钟后再试`,
+    }
+  }
+
+  // 2. No new content: session was extracted before and hasn't been updated since.
+  if (opts.lastExtract && opts.lastExtract.doneAt > 0) {
+    if (opts.sessionUpdated <= opts.lastExtract.doneAt) {
+      return {
+        ok: false,
+        reason: "no-new-content",
+        message: "自上次提取以来无新对话，无需重复提取",
+      }
+    }
+  }
+
+  return { ok: true, reason: "ok", message: "" }
 }
 
 export function getExtractJob(jobId: string): ExtractJob | null {

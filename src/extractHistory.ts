@@ -211,6 +211,24 @@ export async function getExtractHistoryForRequirement(
     .slice(0, Math.max(0, limit))
 }
 
+/**
+ * Return the most recent successful extract record for a session,
+ * regardless of which requirement it was triggered from.
+ *
+ * Used by the debounce/no-new-content guard to check whether the
+ * session has been extracted before and whether new conversation
+ * has happened since.
+ */
+export async function getLastExtractForSession(
+  sessionId: string,
+): Promise<ExtractHistoryRecord | null> {
+  const store = await loadStore()
+  const records = store.records
+    .filter((r) => r.sessionId === sessionId && r.state === "done")
+    .sort((a, b) => b.doneAt - a.doneAt)
+  return records[0] ?? null
+}
+
 /** Test-only override for the history file path. */
 export function _resetExtractHistoryForTest(path: string): void {
   _historyPath = path

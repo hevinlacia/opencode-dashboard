@@ -142,7 +142,10 @@
     })
     if (button) {
       button.disabled = true
-      setTimeout(function () { button.disabled = false }, 5_000)
+      // Match the server-side debounce window for auto-extract; use a
+      // shorter disable for summary mode since it has no debounce guard.
+      var disableMs = isAuto ? 5 * 60_000 : 5_000
+      setTimeout(function () { button.disabled = false }, disableMs)
     }
 
     const body = new URLSearchParams()
@@ -164,6 +167,9 @@
             flashToast({ state: "running", title: "已有相同 session 的任务在跑", subtitle: "继续跟踪现有任务" })
           }
           pollJob(jobId)
+        } else if (r.status === 409 && r.data && r.data.message) {
+          // Debounce or no-new-content rejection from the server.
+          flashToast({ state: "failed", title: "已跳过", subtitle: r.data.message })
         } else {
           showError("提交失败：HTTP " + r.status + " " + (r.data && r.data.error ? r.data.error : ""))
         }

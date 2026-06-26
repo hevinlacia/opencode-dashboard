@@ -56,6 +56,9 @@ import {
   createExtractJob,
   getExtractJob,
   findRunningJobForSession,
+  findRecentJobForSession,
+  checkExtractGuard,
+  EXTRACT_DEBOUNCE_MS,
   JobConflictError,
   type ExtractJob,
 } from "./extractJobs.ts"
@@ -93,6 +96,7 @@ import {
 } from "./sessionRecommendations.ts"
 import {
   getExtractHistoryForRequirement,
+  getLastExtractForSession,
   type ExtractHistoryRecord,
 } from "./extractHistory.ts"
 import {
@@ -2241,6 +2245,23 @@ app.post("/api/requirement/auto-extract", async (c) => {
   const sessionId = String(form.get("sessionId") || "")
   const guard = await resolveExtractTarget(reqId, sessionId)
   if (!guard.ok) return c.text(guard.message, guard.status)
+
+  // Debounce + no-new-content guard: prevent rapid re-triggering and
+  // redundant extracts when the session has no new conversation.
+  const recentJob = findRecentJobForSession(sessionId, EXTRACT_DEBOUNCE_MS)
+  const lastExtract = await getLastExtractForSession(sessionId)
+  const sessions = await scanSessions(true)
+  const sessionInfo = sessions.find((s) => s.id === sessionId)
+  const sessionUpdated = sessionInfo?.updated || sessionInfo?.created || 0
+  const guardResult = checkExtractGuard({
+    recentJob,
+    lastExtract,
+    sessionUpdated,
+    now: Date.now(),
+  })
+  if (!guardResult.ok) {
+    return c.json({ error: guardResult.reason, message: guardResult.message }, 409)
+  }
 
   const files = await readContextFiles(guard.req.reqDir!)
   const prompt = buildAutoExtractPrompt(guard.req, files)
