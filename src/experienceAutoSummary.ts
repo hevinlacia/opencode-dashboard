@@ -472,6 +472,11 @@ export function stopAutoSummaryWorker(): void {
   }
 }
 
+/** Whether the worker interval is currently active. */
+export function isAutoSummaryWorkerRunning(): boolean {
+  return _timer !== null
+}
+
 /**
  * Single poll cycle: find processable markers, check idle time, and
  * trigger summary for those idle ≥1 hour.

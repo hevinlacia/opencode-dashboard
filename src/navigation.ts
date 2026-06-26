@@ -12,8 +12,9 @@ export const PROJECTS_PATH = "/"
 export const PROJECTS_ALIAS_PATH = "/projects"
 export const SESSIONS_PATH = "/sessions"
 export const REPORTS_PATH = "/reports"
+export const SCHEDULERS_PATH = "/schedulers"
 
-export type NavKey = "requirements" | "sessions" | "reports"
+export type NavKey = "requirements" | "sessions" | "reports" | "schedulers"
 
 export interface NavItem {
   key: NavKey
@@ -25,6 +26,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { key: "requirements", label: "/projects", href: PROJECTS_PATH },
   { key: "sessions", label: "/sessions", href: SESSIONS_PATH },
   { key: "reports", label: "/reports", href: REPORTS_PATH },
+  { key: "schedulers", label: "/schedulers", href: SCHEDULERS_PATH },
 ] as const
 
 export function sessionsDaysPath(days: number): string {

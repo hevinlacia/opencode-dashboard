@@ -354,6 +354,11 @@ export function stopAutoExtractScheduler(): void {
   }
 }
 
+/** Whether the scheduler interval is currently active. */
+export function isAutoExtractSchedulerRunning(): boolean {
+  return _timer !== null
+}
+
 /**
  * Single poll cycle. Exported for testing.
  *

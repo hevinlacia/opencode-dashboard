@@ -62,7 +62,7 @@ import {
   JobConflictError,
   type ExtractJob,
 } from "./extractJobs.ts"
-import { enqueueAutoExtract } from "./extractQueue.ts"
+import { enqueueAutoExtract, getQueueStatus } from "./extractQueue.ts"
 import {
   initNotifications,
   getNotifications,
@@ -112,9 +112,12 @@ import {
 import {
   startAutoSummaryWorker,
   triggerExecutionForMarker,
+  isAutoSummaryWorkerRunning,
 } from "./experienceAutoSummary.ts"
 import {
   startAutoExtractScheduler,
+  isAutoExtractSchedulerRunning,
+  POLL_INTERVAL_MS as AUTO_EXTRACT_POLL_MS,
 } from "./autoExtractScheduler.ts"
 
 const __filename = fileURLToPath(import.meta.url)
@@ -127,7 +130,7 @@ const NODE_MODULES_DIR = join(PROJECT_ROOT, "node_modules")
 // Layout
 // ---------------------------------------------------------------------------
 
-type Tab = "sessions" | "reports" | "requirements" | "settings"
+type Tab = "sessions" | "reports" | "requirements" | "settings" | "schedulers"
 
 /**
  * Operator-style topbar: thin console header with a logo block, optional
@@ -176,6 +179,7 @@ const Layout: FC<{ title: string; active: Tab; children: any }> = ({ title, acti
             <a href="/" class={active === "requirements" ? "op-route op-route-active" : "op-route"}>Projects</a>
             <a href="/sessions" class={active === "sessions" ? "op-route op-route-active" : "op-route"}>Sessions</a>
             <a href="/reports" class={active === "reports" ? "op-route op-route-active" : "op-route"}>Reports</a>
+            <a href="/schedulers" class={active === "schedulers" ? "op-route op-route-active" : "op-route"}>Schedulers</a>
             <a href="/settings" class={active === "settings" ? "op-route op-route-active" : "op-route"}>Settings</a>
           </nav>
           <span class="op-embedded">embedded web terminal · {title}</span>
@@ -2128,6 +2132,142 @@ app.post("/api/requirement/status", async (c) => {
     return c.json({ ok: true, status })
   }
   return c.redirect(redirectBack, 303)
+})
+
+// ---------------------------------------------------------------------------
+// Schedulers page
+// ---------------------------------------------------------------------------
+
+const SchedulersPage: FC<{
+  schedulers: {
+    name: string
+    running: boolean
+    pollIntervalMs: number
+    pollIntervalLabel: string
+    enabled: boolean
+    description: string
+    details: { label: string; value: string }[]
+  }[]
+  extractQueues: { reqId: string; queueLength: number; nextAvailableAt: number }[]
+}> = ({ schedulers, extractQueues }) => {
+  return (
+    <Layout title="Schedulers" active="schedulers">
+      <header class="op-section-head">
+        <h1 class="op-section-title">BACKGROUND SCHEDULERS</h1>
+        <div class="op-section-meta">
+          <span class="op-section-meta-item">{schedulers.filter((s) => s.running).length} / {schedulers.length} RUNNING</span>
+        </div>
+      </header>
+
+      <div class="sched-list">
+        {schedulers.map((s) => (
+          <div class={`sched-card${s.running ? " sched-card-running" : ""}`}>
+            <div class="sched-card-head">
+              <span class={`sched-dot sched-dot-${s.running ? "on" : "off"}`}></span>
+              <span class="sched-card-name">{s.name}</span>
+              <span class="sched-card-status">{s.running ? "running" : "stopped"}</span>
+            </div>
+            <div class="sched-card-body">
+              <p class="sched-card-desc muted small">{s.description}</p>
+              <div class="sched-card-meta">
+                <span class="sched-meta-item">间隔 <code>{s.pollIntervalLabel}</code></span>
+                <span class="sched-meta-item">配置 <code>{s.enabled ? "enabled" : "disabled"}</code></span>
+              </div>
+              {s.details.length > 0 ? (
+                <dl class="sched-card-details">
+                  {s.details.map((d) => (
+                    <div class="sched-detail-row">
+                      <dt class="sched-detail-k muted small">{d.label}</dt>
+                      <dd class="sched-detail-v">{d.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {extractQueues.length > 0 ? (
+        <section class="sched-queues">
+          <h2 class="op-section-title" style="font-size: 0.9rem; margin-top: 20px;">EXTRACT QUEUES</h2>
+          <p class="muted small">同需求智能提取延时队列，每个需求排队中的任务间隔 5 分钟。</p>
+          <table class="sched-queue-table">
+            <thead>
+              <tr><th>需求 ID</th><th>排队数</th><th>下一个可用时间</th></tr>
+            </thead>
+            <tbody>
+              {extractQueues.map((q) => (
+                <tr>
+                  <td><code>{q.reqId}</code></td>
+                  <td>{q.queueLength}</td>
+                  <td>{q.nextAvailableAt > Date.now() ? formatRelAgo(q.nextAvailableAt) : "现在"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+    </Layout>
+  )
+}
+
+app.get("/schedulers", async (c) => {
+  const cfg = await getConfig()
+  const allMarkers = listMarkers()
+  const processable = allMarkers.filter((m) => m.status === "marked")
+  const summarizing = allMarkers.filter((m) => m.status === "summarizing")
+  const summarized = allMarkers.filter((m) => m.status === "summarized")
+  const failed = allMarkers.filter((m) => m.status === "failed")
+
+  // Collect active extract queues from all requirements.
+  const extractQueues: { reqId: string; queueLength: number; nextAvailableAt: number }[] = []
+
+  const schedulers = [
+    {
+      name: "定时智能提取",
+      running: isAutoExtractSchedulerRunning(),
+      pollIntervalMs: AUTO_EXTRACT_POLL_MS,
+      pollIntervalLabel: "10 min",
+      enabled: cfg.autoExtractSchedule,
+      description: "每 10 分钟轮询一次：对新绑定 session 在创建 24 小时后自动触发智能提取；之后每 24 小时检查 session 是否有新增内容，有则再次触发。",
+      details: [
+        { label: "配置开关", value: cfg.autoExtractSchedule ? "✅ autoExtractSchedule = true" : "❌ autoExtractSchedule = false" },
+        { label: "提取模型", value: cfg.extractModel || "(default)" },
+      ],
+    },
+    {
+      name: "经验自动总结",
+      running: isAutoSummaryWorkerRunning(),
+      pollIntervalMs: 5 * 60 * 1000,
+      pollIntervalLabel: "5 min",
+      enabled: true,
+      description: "每 5 分钟轮询一次：用户标记的 session 空闲 ≥1 小时后，自动 fork 生成经验报告并执行确认的候选项。",
+      details: [
+        { label: "待处理标记", value: `${processable.length} 个（status=marked）` },
+        { label: "总结中", value: `${summarizing.length} 个（status=summarizing）` },
+        { label: "已完成", value: `${summarized.length} 个（status=summarized）` },
+        { label: "失败", value: `${failed.length} 个（status=failed）` },
+        { label: "总计标记", value: `${allMarkers.length} 个` },
+      ],
+    },
+    {
+      name: "智能提取延时队列",
+      running: extractQueues.length > 0,
+      pollIntervalMs: 5 * 60 * 1000,
+      pollIntervalLabel: "on-demand",
+      enabled: true,
+      description: "同一需求的多个 session 智能提取按 5 分钟间隔排队执行，避免并发写入冲突。",
+      details: extractQueues.length > 0
+        ? extractQueues.map((q) => ({
+            label: q.reqId,
+            value: `${q.queueLength} 个排队中，下一个 ${q.nextAvailableAt > Date.now() ? formatRelAgo(q.nextAvailableAt) : "现在"}`,
+          }))
+        : [{ label: "状态", value: "空闲（无排队中的任务）" }],
+    },
+  ]
+
+  return c.html(<SchedulersPage schedulers={schedulers} extractQueues={extractQueues} />)
 })
 
 // ---------------------------------------------------------------------------

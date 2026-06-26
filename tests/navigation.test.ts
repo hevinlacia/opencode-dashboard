@@ -15,28 +15,29 @@ import {
   PROJECTS_ALIAS_PATH,
   PROJECTS_PATH,
   REPORTS_PATH,
+  SCHEDULERS_PATH,
   SESSIONS_PATH,
   sessionsDaysPath,
 } from "../src/navigation.ts"
 
-test("NAV_ITEMS labels are projects, sessions, reports in that order", () => {
+test("NAV_ITEMS labels are projects, sessions, reports, schedulers in that order", () => {
   assert.deepEqual(
     NAV_ITEMS.map((i) => i.label),
-    ["/projects", "/sessions", "/reports"],
+    ["/projects", "/sessions", "/reports", "/schedulers"],
   )
 })
 
-test("NAV_ITEMS hrefs are /, /sessions, /reports in that order", () => {
+test("NAV_ITEMS hrefs are /, /sessions, /reports, /schedulers in that order", () => {
   assert.deepEqual(
     NAV_ITEMS.map((i) => i.href),
-    ["/", "/sessions", "/reports"],
+    ["/", "/sessions", "/reports", "/schedulers"],
   )
 })
 
-test("NAV_ITEMS keys are requirements, sessions, reports in that order", () => {
+test("NAV_ITEMS keys are requirements, sessions, reports, schedulers in that order", () => {
   assert.deepEqual(
     NAV_ITEMS.map((i) => i.key),
-    ["requirements", "sessions", "reports"],
+    ["requirements", "sessions", "reports", "schedulers"],
   )
 })
 
@@ -50,9 +51,10 @@ test("PROJECTS_ALIAS_PATH is /projects and is distinct from HOME_PATH", () => {
   assert.notEqual(PROJECTS_ALIAS_PATH, HOME_PATH)
 })
 
-test("SESSIONS_PATH and REPORTS_PATH constants", () => {
+test("SESSIONS_PATH, REPORTS_PATH and SCHEDULERS_PATH constants", () => {
   assert.equal(SESSIONS_PATH, "/sessions")
   assert.equal(REPORTS_PATH, "/reports")
+  assert.equal(SCHEDULERS_PATH, "/schedulers")
 })
 
 test("sessionsDaysPath builds /sessions?days=<n>", () => {
