@@ -921,5 +921,25 @@ export async function buildInjectionContext(reqId: string): Promise<string> {
   }
   lines.push("")
   lines.push(closing)
+
+  // Maintenance instructions — only injected for real requirements with a
+  // reqDir, not for DEFAULT_REQ_ID or not-found fallbacks. This shifts
+  // requirement-document upkeep from a delayed fork-based extraction into
+  // the live session, so the agent that does the work also records it.
+  if (req.reqDir) {
+    lines.push("")
+    lines.push("【需求文档维护】")
+    lines.push(
+      "本 session 关联了上述需求文件。在开发过程中达成以下成果时，请主动更新对应文件：",
+    )
+    lines.push("- 确定或变更分支策略、关键 commit → branch.md")
+    lines.push("- 发现 DB/Apollo/Nacos 配置变更 → config-changes.md")
+    lines.push("- 明确测试场景、回归范围 → test.md")
+    lines.push("- 阶段性进展、关键决策、踩坑 → 追加到 notes.md")
+    lines.push(
+      "更新方式：直接用文件工具编辑上述路径的文件，保持简洁，只记录关键信息。不要修改 meta.md 的 status 字段（由 dashboard 管理）。",
+    )
+  }
+
   return lines.join("\n")
 }

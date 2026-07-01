@@ -118,7 +118,6 @@ import {
 import {
   startAutoExtractScheduler,
   isAutoExtractSchedulerRunning,
-  POLL_INTERVAL_MS as AUTO_EXTRACT_POLL_MS,
 } from "./autoExtractScheduler.ts"
 import {
   startAutoValuationWorker,
@@ -2238,7 +2237,7 @@ const SchedulersPage: FC<{
   schedulers: {
     name: string
     running: boolean
-    pollIntervalMs: number
+    pollIntervalMs: number | null
     pollIntervalLabel: string
     enabled: boolean
     description: string
@@ -2353,10 +2352,10 @@ app.get("/schedulers", async (c) => {
     {
       name: "定时智能提取",
       running: isAutoExtractSchedulerRunning(),
-      pollIntervalMs: AUTO_EXTRACT_POLL_MS,
-      pollIntervalLabel: "10 min",
+      pollIntervalMs: null,
+      pollIntervalLabel: "每晚 0 点",
       enabled: cfg.autoExtractSchedule,
-      description: "每 10 分钟轮询一次：对新绑定 session 在创建 24 小时后自动触发智能提取；之后每 24 小时检查 session 是否有新增内容，有则再次触发。",
+      description: "每晚 0 点扫描所有需求关联的 session，对未提取过的 session fork 后注入提示词更新需求文件；已提取过的不再重复。",
       details: [
         { label: "配置开关", value: cfg.autoExtractSchedule ? "✅ autoExtractSchedule = true" : "❌ autoExtractSchedule = false" },
         { label: "提取模型", value: cfg.extractModel || "(default)" },
@@ -2462,7 +2461,7 @@ const SettingsPage: FC<{ config: AppConfig }> = ({ config }) => (
               <span>定时智能提取</span>
             </label>
             <p class="muted small">
-              开启后，后台每 10 分钟轮询一次：对新绑定 session 在创建 24 小时后自动触发一次智能提取；之后每 24 小时检查 session 是否有新增内容，有则再次触发。
+              开启后，每晚 0 点自动扫描所有需求关联的 session。对尚未被智能提取过的 session，fork 后注入提示词分析内容并更新需求文件；已提取过的 session 不再重复提取。
             </p>
           </div>
 
@@ -3246,10 +3245,10 @@ await initMarkers()
 // triggers auto-summary forks once sessions are idle ≥1 hour.
 startAutoSummaryWorker()
 
-// Start the background scheduler for automated smart context extraction.
-// Polls every 10 min; triggers auto-extract 24 h after session creation
-// (initial) and every 24 h when sessions have new content (periodic).
-// Controlled by the `autoExtractSchedule` config toggle.
+// Start the nightly scheduler for automated smart context extraction.
+// Fires at midnight (local time) each night; also runs a startup poll
+// 30 s after boot to catch missed runs. Controlled by the
+// `autoExtractSchedule` config toggle.
 startAutoExtractScheduler()
 
 // Start the background worker for session value discovery.

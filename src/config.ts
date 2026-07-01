@@ -33,10 +33,12 @@ export interface AppConfig {
    */
   autoExtract: boolean
   /**
-   * false (default) = scheduled auto-extract is disabled.
-   * true = the background scheduler polls every 10 min and triggers
-   * auto-extract for sessions that are 24 h old (initial) or have
-   * new content since the last extract (periodic).
+   * false (default) = nightly auto-extract is disabled.
+   * true = the background scheduler fires at midnight (local time)
+   * each night, sweeping all requirement-bound sessions. Sessions that
+   * have never been smart-extracted are forked and their content is
+   * analyzed to update requirement files. Already-extracted sessions
+   * are skipped permanently.
    */
   autoExtractSchedule: boolean
   /**

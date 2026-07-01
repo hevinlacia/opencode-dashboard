@@ -133,6 +133,7 @@ test("buildInjectionContext: returns minimal context for DEFAULT_REQ_ID", async 
   // file-modification hints — those are only for real Hermes requirements.
   assert.equal(ctx.includes("需求文件"), false)
   assert.equal(ctx.includes("你可以直接修改上述文件"), false)
+  assert.equal(ctx.includes("需求文档维护"), false)
 })
 
 test("buildInjectionContext: lists file paths and content for a real requirement", async () => {
@@ -200,6 +201,11 @@ test("buildInjectionContext: lists file paths and content for a real requirement
     // Old "continue and modify files" closing line is gone.
     assert.equal(ctx.includes("请基于以上需求上下文继续"), false)
     assert.equal(ctx.includes("你可以直接修改上述文件"), false)
+
+    // Maintenance instructions are present for real requirements.
+    assert.match(ctx, /【需求文档维护】/)
+    assert.match(ctx, /请主动更新对应文件/)
+    assert.match(ctx, /不要修改 meta\.md 的 status 字段/)
   } finally {
     _setReqDir(prevReqDir)
   }
