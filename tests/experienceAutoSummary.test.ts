@@ -22,6 +22,8 @@ import {
   buildSummaryPrompt,
   buildExecutionPrompt,
   computeIdleMs,
+  isSessionRecentForDailyWindow,
+  msUntilNextLocalHour,
   triggerSummaryForMarker,
   triggerExecutionForMarker,
   IDLE_THRESHOLD_MS,
@@ -126,6 +128,43 @@ test("computeIdleMs: returns Infinity for session with no timestamps", () => {
 
 test("IDLE_THRESHOLD_MS is 1 hour", () => {
   assert.equal(IDLE_THRESHOLD_MS, 60 * 60 * 1000)
+})
+
+test("isSessionRecentForDailyWindow: true when updated within 24h", () => {
+  const now = Date.now()
+  const session: SessionInfo = {
+    id: VALID_SID,
+    title: "test",
+    created: now - 7 * 24 * 60 * 60 * 1000,
+    updated: now - 60_000,
+    projectId: "test",
+    directory: "",
+    status: "idle",
+    source: "db",
+  }
+  assert.equal(isSessionRecentForDailyWindow(session, now), true)
+})
+
+test("isSessionRecentForDailyWindow: false when not touched in 24h", () => {
+  const now = Date.now()
+  const session: SessionInfo = {
+    id: VALID_SID,
+    title: "test",
+    created: now - 2 * 24 * 60 * 60 * 1000,
+    updated: now - 24 * 60 * 60 * 1000 - 1,
+    projectId: "test",
+    directory: "",
+    status: "stale",
+    source: "db",
+  }
+  assert.equal(isSessionRecentForDailyWindow(session, now), false)
+})
+
+test("msUntilNextLocalHour: computes the next 01:00 run", () => {
+  const before = new Date(2026, 6, 1, 0, 30, 0, 0)
+  assert.equal(msUntilNextLocalHour(1, before), 30 * 60 * 1000)
+  const after = new Date(2026, 6, 1, 1, 1, 0, 0)
+  assert.equal(msUntilNextLocalHour(1, after), (23 * 60 + 59) * 60 * 1000)
 })
 
 // ---------------------------------------------------------------------------

@@ -118,6 +118,7 @@ import {
 import {
   startAutoExtractScheduler,
   isAutoExtractSchedulerRunning,
+  POLL_INTERVAL_MS as AUTO_EXTRACT_POLL_MS,
 } from "./autoExtractScheduler.ts"
 import {
   startAutoValuationWorker,
@@ -129,6 +130,22 @@ import {
   POLL_INTERVAL_MS as VALUATION_POLL_MS,
   type ValuationStats,
 } from "./autoValuation.ts"
+import {
+  buildRecallMarkdown,
+  readSessionTranscript,
+} from "./sessionTranscript.ts"
+import {
+  FULL_SYNC_HOUR,
+  FULL_SYNC_MINUTE,
+  getLastFullSyncResult,
+  isFullSyncSchedulerRunning,
+  POLL_INTERVAL_MS as FULL_SYNC_POLL_MS,
+  startFullSyncScheduler,
+} from "./fullSyncScheduler.ts"
+import {
+  getOpencodeProcessQueueStatus,
+  runQueuedOpencodeProcess,
+} from "./opencodeProcessQueue.ts"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -1000,12 +1017,15 @@ const ReleaseChecklistCard: FC<{ checklist: ReleaseChecklist }> = ({ checklist }
     checklist.applications.length > 0 ||
     checklist.branches.length > 0 ||
     checklist.dbChanges.length > 0 ||
-    checklist.configChanges.length > 0
+    checklist.configChanges.length > 0 ||
+    checklist.mqResources.length > 0 ||
+    checklist.verificationChains.length > 0 ||
+    checklist.reviewItems.length > 0
   return (
     <section class="release-checklist" aria-label="上线检查">
       <h2 class="op-section-title">📋 上线检查清单</h2>
       {!hasData ? (
-        <p class="muted small">尚未从上下文文件中提取到上线信息。请先运行「智能提取」补充 branch.md / config-changes.md / test.md。</p>
+        <p class="muted small">尚未从上下文文件中提取到上线信息。请先运行「智能提取」补充 branch.md / config-changes.md / test.md / review.md。</p>
       ) : (
         <div class="release-checklist-grid">
           {checklist.applications.length > 0 ? (
@@ -1038,6 +1058,24 @@ const ReleaseChecklistCard: FC<{ checklist: ReleaseChecklist }> = ({ checklist }
               <ul>{checklist.configChanges.map((c) => <li><code>{c}</code></li>)}</ul>
             </div>
           ) : null}
+          {checklist.mqResources.length > 0 ? (
+            <div class="release-checklist-section">
+              <h3>Topic / Group / 云资源</h3>
+              <ul>{checklist.mqResources.map((c) => <li><code>{c}</code></li>)}</ul>
+            </div>
+          ) : null}
+          {checklist.verificationChains.length > 0 ? (
+            <div class="release-checklist-section">
+              <h3>上线前复验链路</h3>
+              <ul>{checklist.verificationChains.map((c) => <li>{c}</li>)}</ul>
+            </div>
+          ) : null}
+          {checklist.reviewItems.length > 0 ? (
+            <div class="release-checklist-section">
+              <h3>Code Review 结论</h3>
+              <ul>{checklist.reviewItems.map((c) => <li>{c}</li>)}</ul>
+            </div>
+          ) : null}
           {checklist.releaseNotes.length > 0 ? (
             <div class="release-checklist-section release-checklist-notes">
               <h3>上线注意事项</h3>
@@ -1061,10 +1099,12 @@ const RequirementDetailPage: FC<{
   notesContent?: string
   testContent?: string
   configContent?: string
+  memoryContent?: string
+  reviewContent?: string
   state?: RequirementState | null
   childReqs?: Requirement[]
   parentReq?: Requirement | null
-}> = ({ req, associated, unassociated, recommendations, extractHistory, backgroundContent, branchContent, notesContent, testContent, configContent, state, childReqs, parentReq }) => {
+}> = ({ req, associated, unassociated, recommendations, extractHistory, backgroundContent, branchContent, notesContent, testContent, configContent, memoryContent, reviewContent, state, childReqs, parentReq }) => {
   const isParent = !!(req.childIds && req.childIds.length > 0)
   const currentIdx = REQ_STATUSES.indexOf(req.status)
   const description = (req.description || "").trim()
@@ -1261,6 +1301,9 @@ const RequirementDetailPage: FC<{
                           解除绑定
                         </button>
                       </form>
+                      <a class="muted small req-extract-link-inline" href={`/requirement/recall?reqId=${encodeURIComponent(req.id)}&sessionId=${encodeURIComponent(s.id)}`} title="只读召回这个历史 session 的文本上下文">
+                        召回历史 →
+                      </a>
                     </li>
                   ))}
                 </ul>
@@ -1361,6 +1404,7 @@ const RequirementDetailPage: FC<{
           config: configContent,
           test: testContent,
           notes: notesContent,
+          review: reviewContent,
         })
         return <ReleaseChecklistCard checklist={checklist} />
       })() : null}
@@ -1372,11 +1416,13 @@ const RequirementDetailPage: FC<{
         </section>
       ) : null}
 
+      <HermesFileSection title="需求记忆" content={memoryContent} />
       <HermesFileSection title="需求背景" content={backgroundContent} />
       <HermesFileSection title="分支信息" content={branchContent} />
       <HermesFileSection title="开发笔记" content={notesContent} />
       <HermesFileSection title="测试范围" content={testContent} />
       <HermesFileSection title="配置变更" content={configContent} />
+      <HermesFileSection title="上线 Review" content={reviewContent} />
 
       {extractHistory.length > 0 ? (
         <section class="req-extract-history" aria-label="上下文提取历史">
@@ -1436,6 +1482,9 @@ const RequirementDetailPage: FC<{
                     提取上下文 →
                   </button>
                 </form>
+                <a class="muted small req-extract-link-inline" href={`/requirement/recall?reqId=${encodeURIComponent(req.id)}&sessionId=${encodeURIComponent(s.id)}`} title="只读召回这个历史 session 的文本上下文">
+                  召回历史 →
+                </a>
               </li>
             ))}
           </ul>
@@ -1618,6 +1667,43 @@ const RequirementExtractPreviewPage: FC<{
         )}
       </div>
       <script src="/static/req-detail.js" defer></script>
+    </Layout>
+  )
+}
+
+const RequirementRecallPage: FC<{
+  req: Requirement
+  sessionId: string
+  markdown: string
+  partCount: number
+}> = ({ req, sessionId, markdown, partCount }) => {
+  const backHref = `/requirement?id=${encodeURIComponent(req.id)}`
+  return (
+    <Layout title={`召回历史 — ${req.title}`} active="requirements">
+      <div class="req-extract">
+        <div class="page-header">
+          <a href={backHref} class="back-link">← 返回需求 {req.title}</a>
+          <h1>历史 Session 召回</h1>
+          <div class="meta-grid">
+            <div><span class="field-label">需求</span> {req.title}</div>
+            <div><span class="field-label">Session</span> <code>{sessionId}</code></div>
+            <div><span class="field-label">Text parts</span> {partCount}</div>
+          </div>
+        </div>
+        <section class="req-extract-preview" aria-label="历史 session 召回内容">
+          <p class="muted small">
+            这是从 OpenCode SQLite 直接读取的只读文本片段；已过滤 reasoning、tool、step 和非文本 part。用于人工或 AI 按需追溯，不会自动写入需求文件。
+          </p>
+          {markdown ? (
+            <pre class="req-extract-body" style="white-space: pre-wrap; overflow: auto; max-height: 70vh;">{markdown}</pre>
+          ) : (
+            <div class="auto-extract-empty">
+              <p>没有读到可召回的文本片段。可能该 session 不在本机 SQLite 中，或只有工具/流程片段。</p>
+              <a href={backHref} class="btn btn-secondary">返回需求</a>
+            </div>
+          )}
+        </section>
+      </div>
     </Layout>
   )
 }
@@ -1843,12 +1929,14 @@ app.get("/requirement", async (c) => {
       return undefined
     }
   }
-  const [backgroundContent, branchContent, notesContent, testContent, configContent] = await Promise.all([
+  const [backgroundContent, branchContent, notesContent, testContent, configContent, memoryContent, reviewContent] = await Promise.all([
     readFileSafe(req.backgroundPath),
     readFileSafe(req.branchPath),
     readFileSafe(req.notesPath),
     readFileSafe(req.testPath),
     readFileSafe(req.configPath),
+    readFileSafe(req.memoryPath),
+    readFileSafe(req.reviewPath),
   ])
 
   const sessions = await scanSessions()
@@ -1898,6 +1986,8 @@ app.get("/requirement", async (c) => {
       notesContent={notesContent}
       testContent={testContent}
       configContent={configContent}
+      memoryContent={memoryContent}
+      reviewContent={reviewContent}
       state={state}
       recommendations={recommendations}
       extractHistory={extractHistory}
@@ -1936,14 +2026,13 @@ app.post("/api/requirement/new-session", async (c) => {
   const title = req.title || reqId
   const startMs = Date.now()
 
-  // Spawn detached — the agent processes the context in the background
-  // and writes its own session record. We unref so the dashboard
-  // process can exit independently of the opencode child.
-  const child = spawn("opencode", ["run", ctx, "--title", title], {
-    detached: true,
-    stdio: "ignore",
-  })
-  child.unref()
+  // Run via the dashboard-owned process queue so background session
+  // creation cannot exceed the global OpenCode process cap.
+  void runQueuedOpencodeProcess({
+    bin: "opencode",
+    args: ["run", ctx, "--title", title],
+    spawnOptions: { stdio: ["ignore", "pipe", "pipe"] },
+  }).catch(() => {})
 
   // Poll for the newly created session id. clearSessionCache forces the
   // next scanSessions() to re-query sqlite/CLI/fs so we see the new
@@ -2175,6 +2264,23 @@ app.get("/requirement/extract", async (c) => {
   )
 })
 
+app.get("/requirement/recall", async (c) => {
+  const reqId = String(c.req.query("reqId") || "")
+  const sessionId = String(c.req.query("sessionId") || "")
+  const guard = await resolveExtractTarget(reqId, sessionId)
+  if (!guard.ok) return c.text(guard.message, guard.status)
+  const parts = await readSessionTranscript({ sessionId, limitParts: 240, maxTextChars: 6_000 })
+  const markdown = buildRecallMarkdown(parts)
+  return c.html(<RequirementRecallPage req={guard.req} sessionId={sessionId} markdown={markdown} partCount={parts.length} />)
+})
+
+app.get("/api/session/transcript", async (c) => {
+  const sessionId = String(c.req.query("id") || "")
+  if (!isValidSessionId(sessionId)) return c.json({ error: "Invalid session id" }, 400)
+  const parts = await readSessionTranscript({ sessionId })
+  return c.json({ sessionId, parts, markdown: buildRecallMarkdown(parts) })
+})
+
 // POST /api/requirement/extract-context/commit
 // Append the (user-edited) summary body to <reqDir>/notes.md and
 // redirect back to the requirement page. Same validation as GET above.
@@ -2350,12 +2456,27 @@ app.get("/schedulers", async (c) => {
 
   const schedulers = [
     {
+      name: "OpenCode 全量同步",
+      running: isFullSyncSchedulerRunning(),
+      pollIntervalMs: FULL_SYNC_POLL_MS,
+      pollIntervalLabel: `${String(FULL_SYNC_HOUR).padStart(2, "0")}:${String(FULL_SYNC_MINUTE).padStart(2, "0")}`,
+      enabled: cfg.fullSyncSchedule,
+      description: "每天本地 20:30 触发一次 OpenCode 配置全量同步；这是唯一保留的自动同步机制。",
+      details: (() => {
+        const last = getLastFullSyncResult()
+        return [
+          { label: "配置开关", value: cfg.fullSyncSchedule ? "✅ fullSyncSchedule = true" : "❌ fullSyncSchedule = false" },
+          { label: "上次结果", value: last ? (last.ok ? "success" : `failed: ${last.stderr || last.exitCode}`) : "本进程尚未执行" },
+        ]
+      })(),
+    },
+    {
       name: "定时智能提取",
       running: isAutoExtractSchedulerRunning(),
-      pollIntervalMs: null,
-      pollIntervalLabel: "每晚 0 点",
+      pollIntervalMs: AUTO_EXTRACT_POLL_MS,
+      pollIntervalLabel: "00:00",
       enabled: cfg.autoExtractSchedule,
-      description: "每晚 0 点扫描所有需求关联的 session，对未提取过的 session fork 后注入提示词更新需求文件；已提取过的不再重复。",
+      description: "每天本地 00:00 触发一次：只检查最近 24 小时内创建或更新过的需求 session；首次未提取或有新增内容时生成智能提取预览。",
       details: [
         { label: "配置开关", value: cfg.autoExtractSchedule ? "✅ autoExtractSchedule = true" : "❌ autoExtractSchedule = false" },
         { label: "提取模型", value: cfg.extractModel || "(default)" },
@@ -2364,10 +2485,10 @@ app.get("/schedulers", async (c) => {
     {
       name: "经验自动总结",
       running: isAutoSummaryWorkerRunning(),
-      pollIntervalMs: 5 * 60 * 1000,
-      pollIntervalLabel: "5 min",
+      pollIntervalMs: 24 * 60 * 60 * 1000,
+      pollIntervalLabel: "01:00",
       enabled: true,
-      description: "每 5 分钟轮询一次：用户标记的 session 空闲 ≥1 小时后，自动 fork 生成经验报告并执行确认的候选项。",
+      description: "每天本地 01:00 触发一次：只检查最近 24 小时内创建或更新过、且已空闲 ≥1 小时的已标记 session，自动 fork 生成经验报告。",
       details: [
         { label: "待处理标记", value: `${processable.length} 个（status=marked）` },
         { label: "总结中", value: `${summarizing.length} 个（status=summarizing）` },
@@ -2439,6 +2560,21 @@ const SettingsPage: FC<{ config: AppConfig }> = ({ config }) => (
             <label class="settings-label">
               <input
                 type="checkbox"
+                name="fullSyncSchedule"
+                id="cfg-full-sync-schedule"
+                checked={config.fullSyncSchedule}
+              />
+              <span>每日 20:30 全量同步</span>
+            </label>
+            <p class="muted small">
+              开启后，dashboard 每晚 20:30 运行一次 <code>opencode-cron-sync.sh --full</code>。其它高频自动同步机制应保持关闭。
+            </p>
+          </div>
+
+          <div class="settings-field">
+            <label class="settings-label">
+              <input
+                type="checkbox"
                 name="autoExtract"
                 id="cfg-auto-extract"
                 checked={config.autoExtract}
@@ -2461,7 +2597,7 @@ const SettingsPage: FC<{ config: AppConfig }> = ({ config }) => (
               <span>定时智能提取</span>
             </label>
             <p class="muted small">
-              开启后，每晚 0 点自动扫描所有需求关联的 session。对尚未被智能提取过的 session，fork 后注入提示词分析内容并更新需求文件；已提取过的 session 不再重复提取。
+              开启后，后台每天本地 00:00 触发一次：只检查最近 24 小时内创建或更新过的需求 session；首次未提取或有新增内容时生成智能提取预览。
             </p>
           </div>
 
@@ -2553,6 +2689,7 @@ app.post("/api/config", async (c) => {
   const partial: Partial<AppConfig> = {}
   if (typeof body.autoExtract === "boolean") partial.autoExtract = body.autoExtract
   if (typeof body.autoExtractSchedule === "boolean") partial.autoExtractSchedule = body.autoExtractSchedule
+  if (typeof body.fullSyncSchedule === "boolean") partial.fullSyncSchedule = body.fullSyncSchedule
   if (typeof body.extractModel === "string" && body.extractModel.trim()) partial.extractModel = body.extractModel.trim()
   if (typeof body.minChangeMessages === "number" && body.minChangeMessages > 0) partial.minChangeMessages = Math.floor(body.minChangeMessages)
   if (typeof body.autoValuation === "boolean") partial.autoValuation = body.autoValuation
@@ -2579,14 +2716,16 @@ async function readContextFiles(reqDir: string): Promise<ContextFiles> {
       return undefined
     }
   }
-  const [meta, branch, config, test, notes] = await Promise.all([
+  const [meta, memory, branch, config, test, notes, review] = await Promise.all([
     readSafe("meta.md"),
+    readSafe("memory.md"),
     readSafe("branch.md"),
     readSafe("config-changes.md"),
     readSafe("test.md"),
     readSafe("notes.md"),
+    readSafe("review.md"),
   ])
-  return { meta, branch, config, test, notes }
+  return { meta, memory, branch, config, test, notes, review }
 }
 
 /**
@@ -2626,12 +2765,14 @@ app.post("/api/requirement/auto-extract", async (c) => {
   const cfg = await getConfig()
 
   try {
-    const result = enqueueAutoExtract({
-      reqId,
-      sessionId,
-      prompt,
-      model: cfg.extractModel,
-    })
+      const result = enqueueAutoExtract({
+        reqId,
+        sessionId,
+        prompt,
+        model: cfg.extractModel,
+        autoAdopt: false,
+        reqDir: guard.req.reqDir,
+      })
     if (result.status === "immediate") {
       return c.json({ jobId: result.jobId, state: "running" }, 202)
     }
@@ -2795,7 +2936,7 @@ app.post("/api/requirement/auto-extract/commit", async (c) => {
   if (!guard.req.reqDir) return c.text("Requirement has no directory", 400)
 
   const reqDir = guard.req.reqDir
-  const allowedFiles = new Set(["branch.md", "config-changes.md", "test.md", "notes.md", "meta.md"])
+  const allowedFiles = new Set(["memory.md", "branch.md", "config-changes.md", "test.md", "notes.md", "review.md", "meta.md"])
   let written = 0
 
   // Process updates and appends from form fields
@@ -3256,6 +3397,10 @@ startAutoExtractScheduler()
 // using metadata + SQLite content, and auto-marks sessions above the
 // configured threshold (when autoValuation is enabled).
 startAutoValuationWorker()
+
+// Start the single retained automatic config sync mechanism: a daily
+// full sync at local 20:30, controlled by `fullSyncSchedule`.
+startFullSyncScheduler()
 
 serve({ fetch: app.fetch, websocket: { server: wss }, port }, (info) => {
   console.log(`OpenCode Dashboard running at http://localhost:${info.port}`)

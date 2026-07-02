@@ -25,18 +25,20 @@ test("getConfig returns defaults when no file exists", async () => {
   assert.equal(cfg.autoExtract, false)
   assert.equal(cfg.extractModel, "litellm-local/deepseek-v4-flash-auto")
   assert.equal(cfg.minChangeMessages, 5)
+  assert.equal(cfg.fullSyncSchedule, true)
 })
 
 test("setConfig persists and reloads", async () => {
   const p = newTmpPath()
   _resetForTest(p)
-  await setConfig({ autoExtract: true, extractModel: "gpt-4o", minChangeMessages: 10 })
+  await setConfig({ autoExtract: true, extractModel: "gpt-4o", minChangeMessages: 10, fullSyncSchedule: false })
   _resetForTest(p)
   await initConfig()
   const cfg = await getConfig()
   assert.equal(cfg.autoExtract, true)
   assert.equal(cfg.extractModel, "gpt-4o")
   assert.equal(cfg.minChangeMessages, 10)
+  assert.equal(cfg.fullSyncSchedule, false)
 })
 
 test("setConfig merges partial updates", async () => {
@@ -48,4 +50,5 @@ test("setConfig merges partial updates", async () => {
   assert.equal(cfg.autoExtract, true)
   assert.equal(cfg.minChangeMessages, 20)
   assert.equal(cfg.extractModel, "litellm-local/deepseek-v4-flash-auto")
+  assert.equal(cfg.fullSyncSchedule, true)
 })

@@ -41,6 +41,8 @@ export interface EnqueueOptions {
   sessionId: string
   prompt: string
   model: string
+  autoAdopt?: boolean
+  reqDir?: string
 }
 
 export interface EnqueueResult {
@@ -95,6 +97,8 @@ export function enqueueAutoExtract(opts: EnqueueOptions): EnqueueResult {
       prompt: opts.prompt,
       mode: "auto",
       model: opts.model,
+      autoAdopt: opts.autoAdopt ?? false,
+      reqDir: opts.reqDir,
     })
     return { status: "immediate", jobId: job.id }
   }
@@ -174,6 +178,8 @@ async function fireQueued(reqId: string): Promise<void> {
       prompt: entry.prompt,
       mode: "auto",
       model: entry.model,
+      autoAdopt: entry.autoAdopt ?? false,
+      reqDir: entry.reqDir,
     })
   } catch {
     // JobConflictError or other — skip this queued item silently.

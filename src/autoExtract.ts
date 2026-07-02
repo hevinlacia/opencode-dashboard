@@ -5,7 +5,8 @@
  *
  * Role: the "smart" extract mode. Instead of just summarizing the
  * session into notes.md, the agent sees the full requirement context
- * (meta.md, branch.md, config-changes.md, test.md, notes.md) and
+ * (meta.md, memory.md, branch.md, config-changes.md, test.md,
+ * notes.md, review.md) and
  * decides which files need updating based on what happened in the
  * session.
  *
@@ -29,10 +30,12 @@ import type { Requirement } from "./requirements.ts"
 
 export interface ContextFiles {
   meta?: string
+  memory?: string
   branch?: string
   config?: string
   test?: string
   notes?: string
+  review?: string
 }
 
 export interface FileUpdate {
@@ -82,6 +85,9 @@ export function buildAutoExtractPrompt(
   if (files.meta !== undefined) {
     parts.push("=== 现有 meta.md ===", files.meta || "(空)", "")
   }
+  if (files.memory !== undefined) {
+    parts.push("=== 现有 memory.md（需求生命周期记忆）===", files.memory || "(空)", "")
+  }
   if (files.branch !== undefined) {
     parts.push("=== 现有 branch.md ===", files.branch || "(空)", "")
   }
@@ -96,6 +102,9 @@ export function buildAutoExtractPrompt(
     const noteLines = (files.notes || "").split("\n")
     const shown = noteLines.length > 80 ? noteLines.slice(-80).join("\n") : files.notes || "(空)"
     parts.push("=== 现有 notes.md（仅末尾 80 行）===", shown, "")
+  }
+  if (files.review !== undefined) {
+    parts.push("=== 现有 review.md ===", files.review || "(空)", "")
   }
 
   parts.push(
@@ -121,11 +130,13 @@ export function buildAutoExtractPrompt(
     "1. 不要修改 meta.md 中的 Status 行（状态只有用户能改）",
     "2. 只输出有变更的文件，不要输出未变更的文件",
     "3. 保持原有文件的格式和风格（表格用 Markdown 表格，列表用 - 或 *）",
-    "4. 对于 branch.md，更新分支信息、PR、合并状态等",
-    "5. 对于 config-changes.md，更新 MQ 开关、Apollo/Nacos 配置、数据库 DDL 等",
-    "6. 对于 test.md，更新测试场景清单、日志关键字（正常/异常）、自测记录、UAT 回归记录、注意事项等",
-    "7. 对于 notes.md，追加本次会话的关键决策、已完成验证、待办事项",
-    "8. 如果会话内容与需求上下文无关或无需更新，只输出 SUMMARY 说明原因",
+    "4. 对于 memory.md，维护跨 session 的需求记忆：当前目标、当前进展、关键决策、已完成改动、待办/风险、影响范围、Session 摘要索引",
+    "5. 对于 branch.md，维护上线包中的应用、仓库、分支、基准分支、PR/Commit、是否需上线、备注",
+    "6. 对于 config-changes.md，维护 DB、Apollo、Nacos、RocketMQ Topic/Group、阿里云控制台等非代码配置变更",
+    "7. 对于 test.md，维护 PRD/需求测试用例、自测记录、可复用验证链路，方便 test/UAT/PRO 前重复验证",
+    "8. 对于 review.md，仅在本次会话包含待上线 code review 或用户确认的 review 处理结论时更新",
+    "9. 对于 notes.md，追加本次会话的关键决策、已完成验证、待办事项",
+    "10. 如果会话内容与需求上下文无关或无需更新，只输出 SUMMARY 说明原因",
     "",
     "不要写客套话，不要用 markdown 代码块包裹整篇输出。",
   )
@@ -226,15 +237,19 @@ function collectUntilDelimiter(
  * meta.md is NOT in updates (only appends for non-Status content).
  */
 export const ALLOWED_UPDATE_FILES = new Set([
+  "memory.md",
   "branch.md",
   "config-changes.md",
   "test.md",
   "notes.md",
+  "review.md",
 ])
 
 export const ALLOWED_APPEND_FILES = new Set([
+  "memory.md",
   "notes.md",
   "meta.md",
+  "review.md",
 ])
 
 /**

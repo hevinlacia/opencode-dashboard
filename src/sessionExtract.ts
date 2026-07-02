@@ -32,6 +32,7 @@ import { existsSync } from "node:fs"
 import { dirname } from "node:path"
 
 import type { Requirement } from "./requirements.ts"
+import { runQueuedOpencodeProcess } from "./opencodeProcessQueue.ts"
 
 /** Cap stdout we keep in memory; opencode summaries are tiny (< 4KB). */
 const MAX_STDOUT_BYTES = 256 * 1024
@@ -150,58 +151,21 @@ export function runExtractSummary(opts: RunExtractOptions): Promise<ExtractResul
   const bin = opts.opencodeBin || "opencode"
   const timeoutMs = opts.timeoutMs ?? DEFAULT_EXTRACT_TIMEOUT_MS
   const model = opts.model && opts.model.trim() ? opts.model.trim() : EXTRACT_MODEL
-  const sp = opts.spawnFn || spawn
   const startedAt = Date.now()
 
-  return new Promise<ExtractResult>((resolvePromise) => {
-    const child = sp(
-      bin,
-      ["run", "--session", opts.sessionId, "--fork", "-m", model, opts.prompt],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    )
-
-    let stdoutBuf = ""
-    let stderrBuf = ""
-    let timedOut = false
-
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        child.kill("SIGKILL")
-      } catch {
-        // ignore
-      }
-    }, timeoutMs)
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdoutBuf.length >= MAX_STDOUT_BYTES) return
-      stdoutBuf += chunk.toString("utf-8")
-      if (stdoutBuf.length > MAX_STDOUT_BYTES) {
-        stdoutBuf = stdoutBuf.slice(0, MAX_STDOUT_BYTES)
-      }
-    })
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderrBuf.length >= MAX_STDERR_BYTES) return
-      stderrBuf += chunk.toString("utf-8")
-      if (stderrBuf.length > MAX_STDERR_BYTES) {
-        stderrBuf = stderrBuf.slice(0, MAX_STDERR_BYTES)
-      }
-    })
-    child.on("error", (err) => {
-      // spawn-level error (e.g. ENOENT): surface as stderr + null exitCode.
-      stderrBuf += (stderrBuf ? "\n" : "") + (err instanceof Error ? err.message : String(err))
-    })
-    child.on("close", (code) => {
-      clearTimeout(timer)
-      resolvePromise({
-        stdout: stdoutBuf.trim(),
-        stderr: stderrBuf.trim(),
-        exitCode: code,
-        durationMs: Date.now() - startedAt,
-        timedOut,
-      })
-    })
-  })
+  return runQueuedOpencodeProcess({
+    bin,
+    args: ["run", "--session", opts.sessionId, "--fork", "-m", model, opts.prompt],
+    spawnOptions: { stdio: ["ignore", "pipe", "pipe"] },
+    timeoutMs,
+    spawnFn: opts.spawnFn,
+  }).then((result) => ({
+    stdout: result.stdout.length > MAX_STDOUT_BYTES ? result.stdout.slice(0, MAX_STDOUT_BYTES) : result.stdout,
+    stderr: result.stderr.length > MAX_STDERR_BYTES ? result.stderr.slice(0, MAX_STDERR_BYTES) : result.stderr,
+    exitCode: result.exitCode,
+    durationMs: Date.now() - startedAt,
+    timedOut: result.timedOut,
+  }))
 }
 
 /**

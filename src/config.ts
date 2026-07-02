@@ -65,6 +65,11 @@ export interface AppConfig {
    * Sessions below this score are filtered out. Default: 25.
    */
   valuationThreshold: number
+  /**
+   * true (default) = dashboard runs the full OpenCode config sync once
+   * per day at 20:30. This replaces frequent hook/systemd auto-syncs.
+   */
+  fullSyncSchedule: boolean
 }
 
 const DEFAULTS: AppConfig = {
@@ -74,6 +79,7 @@ const DEFAULTS: AppConfig = {
   minChangeMessages: 5,
   autoValuation: false,
   valuationThreshold: 25,
+  fullSyncSchedule: true,
 }
 
 const DEFAULT_PATH = join(
@@ -109,6 +115,7 @@ async function load(): Promise<AppConfig> {
       minChangeMessages: parsed.minChangeMessages ?? DEFAULTS.minChangeMessages,
       autoValuation: parsed.autoValuation ?? DEFAULTS.autoValuation,
       valuationThreshold: parsed.valuationThreshold ?? DEFAULTS.valuationThreshold,
+      fullSyncSchedule: parsed.fullSyncSchedule ?? DEFAULTS.fullSyncSchedule,
     }
   } catch {
     _cache = { ...DEFAULTS }
@@ -121,7 +128,7 @@ export async function getConfig(): Promise<AppConfig> {
 }
 
 export async function setConfig(
-  partial: Partial<Pick<AppConfig, "autoExtract" | "autoExtractSchedule" | "extractModel" | "minChangeMessages" | "autoValuation" | "valuationThreshold">>,
+  partial: Partial<Pick<AppConfig, "autoExtract" | "autoExtractSchedule" | "extractModel" | "minChangeMessages" | "autoValuation" | "valuationThreshold" | "fullSyncSchedule">>,
 ): Promise<AppConfig> {
   const cur = await load()
   const next: AppConfig = {
@@ -131,6 +138,7 @@ export async function setConfig(
     minChangeMessages: partial.minChangeMessages ?? cur.minChangeMessages,
     autoValuation: partial.autoValuation ?? cur.autoValuation,
     valuationThreshold: partial.valuationThreshold ?? cur.valuationThreshold,
+    fullSyncSchedule: partial.fullSyncSchedule ?? cur.fullSyncSchedule,
   }
   _cache = next
   const dir = dirname(_path)

@@ -1,10 +1,11 @@
 /**
  * Background worker for auto-summarizing marked sessions.
  *
- * Role: poll the marker store for sessions the user flagged. When a
- * marked session has been idle for ≥1 hour, fork it to generate an
- * experience report. After the user reviews the report and confirms
- * candidates, spawn a second fork to execute the confirmed items.
+ * Role: run one daily poll at local 01:00 for sessions the user flagged
+ * and that were created or updated in the last 24 hours. When such a
+ * session is still idle for ≥1 hour, fork it to generate an experience
+ * report. After the user reviews the report and confirms candidates,
+ * spawn a second fork to execute the confirmed items.
  *
  * Lifecycle (driven by marker status):
  *   marked → summarizing → summarized → confirming → executed
@@ -74,8 +75,14 @@ import {
 /** Session must be idle for ≥1 hour before auto-summary triggers. */
 export const IDLE_THRESHOLD_MS = 60 * 60 * 1000
 
-/** Poll interval for the background worker. */
-export const POLL_INTERVAL_MS = 5 * 60 * 1000
+/** Worker fires once per day at local 01:00. */
+export const DAILY_SUMMARY_HOUR = 1
+
+/** Recency window checked at each daily poll. */
+export const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/** Back-compat export for the schedulers page: next poll is daily. */
+export const POLL_INTERVAL_MS = RECENT_SESSION_WINDOW_MS
 
 /** Handoff directory for auto-summary reports. */
 const HANDOFF_DIR = "/tmp/opencode/handoff/auto-summary"
@@ -191,6 +198,27 @@ export function computeIdleMs(session: SessionInfo | null, now = Date.now()): nu
   const updated = session.updated || session.created || 0
   if (!updated) return Infinity
   return Math.max(0, now - updated)
+}
+
+/** True when a session was created or updated in the last 24 hours. */
+export function isSessionRecentForDailyWindow(
+  session: SessionInfo,
+  now: number = Date.now(),
+): boolean {
+  const latest = Math.max(session.updated || 0, session.created || 0)
+  if (latest <= 0) return false
+  return now - latest <= RECENT_SESSION_WINDOW_MS
+}
+
+/** Milliseconds until the next local occurrence of `hour` (0-23). */
+export function msUntilNextLocalHour(hour: number, now: Date = new Date()): number {
+  const h = Math.max(0, Math.min(23, Math.floor(hour)))
+  const next = new Date(now)
+  next.setHours(h, 0, 0, 0)
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1)
+  }
+  return next.getTime() - now.getTime()
 }
 
 // ---------------------------------------------------------------------------
@@ -445,23 +473,30 @@ export async function triggerExecutionForMarker(
 // Background worker
 // ---------------------------------------------------------------------------
 
-let _timer: ReturnType<typeof setInterval> | null = null
+let _timer: ReturnType<typeof setTimeout> | null = null
 
 /**
- * Start the background worker. Polls every `POLL_INTERVAL_MS` for
- * processable markers whose sessions have been idle for ≥1 hour.
+ * Start the background worker. Runs once per day at local 01:00 for
+ * processable markers whose sessions were recently touched and have
+ * been idle for ≥1 hour.
  *
  * Safe to call multiple times — if already running, does nothing.
  */
 export function startAutoSummaryWorker(): void {
   if (_timer) return
-  _timer = setInterval(() => {
-    void pollOnce().catch(() => {})
-  }, POLL_INTERVAL_MS)
-  // Don't keep the process alive just for the worker.
+  scheduleNextDailyPoll()
+}
+
+function scheduleNextDailyPoll(): void {
+  _timer = setTimeout(() => {
+    void pollOnce()
+      .catch(() => {})
+      .finally(() => {
+        _timer = null
+        scheduleNextDailyPoll()
+      })
+  }, msUntilNextLocalHour(DAILY_SUMMARY_HOUR))
   if (typeof _timer.unref === "function") _timer.unref()
-  // Run one poll immediately on startup.
-  void pollOnce().catch(() => {})
 }
 
 /** Stop the background worker. */
@@ -478,8 +513,8 @@ export function isAutoSummaryWorkerRunning(): boolean {
 }
 
 /**
- * Single poll cycle: find processable markers, check idle time, and
- * trigger summary for those idle ≥1 hour.
+ * Single poll cycle: find processable markers, check the recent-session
+ * window and idle time, and trigger summary for those idle ≥1 hour.
  *
  * Exported for testing.
  */
@@ -487,11 +522,12 @@ export async function pollOnce(): Promise<void> {
   const markers = findProcessableMarkers()
   if (markers.length === 0) return
 
-  const sessions = await scanSessions(true)
+  const sessions = await scanSessions(true, RECENT_SESSION_WINDOW_MS)
   const now = Date.now()
 
   for (const marker of markers) {
     const session = sessions.find((s) => s.id === marker.sessionId) ?? null
+    if (session && !isSessionRecentForDailyWindow(session, now)) continue
     const idleMs = computeIdleMs(session, now)
     if (idleMs >= IDLE_THRESHOLD_MS) {
       // Session is idle long enough — trigger summary.

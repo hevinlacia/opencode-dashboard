@@ -156,9 +156,11 @@ test("buildInjectionContext: lists file paths and content for a real requirement
     "---\n" +
     "Path test description."
   const backgroundContent = "Background snippet line one."
+  const memoryContent = "# 需求记忆\n\n## 当前进展\n- 已完成第一轮改造。"
   const branchContent = "Branch info snippet line one."
   const notesContent = "Notes snippet line one."
   writeFileSync(join(reqSubDir, "meta.md"), metaContent, "utf-8")
+  writeFileSync(join(reqSubDir, "memory.md"), memoryContent, "utf-8")
   writeFileSync(join(reqSubDir, "background.md"), backgroundContent, "utf-8")
   writeFileSync(join(reqSubDir, "branch.md"), branchContent, "utf-8")
   writeFileSync(join(reqSubDir, "notes.md"), notesContent, "utf-8")
@@ -169,25 +171,31 @@ test("buildInjectionContext: lists file paths and content for a real requirement
     const ctx = await buildInjectionContext(reqId)
 
     // Three labeled content sections must each carry their own file body
-    // — no more combined "开发笔记" block, and the new "需求背景" /
-    // "当前进展" / "分支与改动" sections must all appear.
+    // — no more combined "开发笔记" block, and the new "需求记忆" /
+    // "需求背景" / "当前进展" / "分支与改动" sections must all appear.
+    assert.match(ctx, /需求记忆：/)
     assert.match(ctx, /需求背景：/)
     assert.match(ctx, /当前进展：/)
     assert.match(ctx, /分支与改动：/)
 
-    // Path-listing section must include all five known files (background,
-    // branch, notes, test, config-changes) by absolute path.
+    // Path-listing section must include all seven known files (memory,
+    // background, branch, notes, test, config-changes, review) by absolute path.
     assert.match(ctx, /需求文件：/)
+    assert.ok(ctx.includes(join(reqSubDir, "memory.md")))
     assert.ok(ctx.includes(join(reqSubDir, "background.md")))
     assert.ok(ctx.includes(join(reqSubDir, "branch.md")))
     assert.ok(ctx.includes(join(reqSubDir, "notes.md")))
     assert.ok(ctx.includes(join(reqSubDir, "test.md")))
     assert.ok(ctx.includes(join(reqSubDir, "config-changes.md")))
+    assert.ok(ctx.includes(join(reqSubDir, "review.md")))
 
     // Bodies of the three inlined files appear in the output.
+    assert.ok(ctx.includes(memoryContent))
     assert.ok(ctx.includes(backgroundContent))
     assert.ok(ctx.includes(branchContent))
     assert.ok(ctx.includes(notesContent))
+    assert.match(ctx, /新 session 先读 memory\.md/)
+    assert.match(ctx, /状态只通过 dashboard\/API 更新/)
 
     // Files we did NOT create (test.md, config-changes.md) still appear
     // in the path listing but their bodies are NOT inlined.

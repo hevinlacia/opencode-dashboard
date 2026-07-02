@@ -1,11 +1,12 @@
 /**
- * Nightly scheduler for automated smart context extraction.
+ * Background scheduler for automated smart context extraction.
  *
- * Role: at midnight (local time) each night, sweep all requirement-bound
- * sessions and trigger auto-extract for those that have NEVER been
- * smart-extracted. Already-extracted sessions are skipped permanently —
- * ongoing file maintenance is handled by the in-session prompt-based
- * instructions injected via `buildInjectionContext`.
+ * Role: run one daily poll at local midnight for requirement-bound
+ * sessions that were created or updated in the last 24 hours, then
+ * trigger smart extract jobs based on two conditions:
+ *   1. **Initial extract** — if the session has never been extracted.
+ *   2. **Periodic re-extract** — if the session's `updated` timestamp
+ *      has advanced since the last auto-extract.
  *
  * The scheduler reuses the existing `createExtractJob` infrastructure
  * from `extractJobs.ts`, so spawned jobs go through the same notification,
@@ -17,12 +18,14 @@
  * that already ran.
  *
  * Public surface:
- *   - startAutoExtractScheduler(): start the nightly midnight poll loop
- *   - stopAutoExtractScheduler(): stop the poll loop (for tests)
+ *   - startAutoExtractScheduler(): schedule the next local midnight poll
+ *   - stopAutoExtractScheduler(): stop the scheduled poll (for tests)
  *   - pollOnce(): run one poll cycle (exported for testing)
- *   - shouldTriggerInitial(entry, now): pure predicate
+ *   - shouldTriggerInitial(entry): pure predicate
+ *   - shouldTriggerPeriodic(entry, sessionUpdated): pure predicate
+ *   - isSessionRecentForDailyWindow(session, now): 24h recency filter
+ *   - msUntilNextLocalHour(hour, now): daily schedule helper
  *   - syncSchedule(requirements, store): pure reconciliation
- *   - msUntilMidnight(now): calculate delay to next midnight
  *   - _resetForTest(path): test-only path override
  *
  * Constraints / safety:
@@ -30,14 +33,12 @@
  *   - Never reads or writes `.env` / secret files.
  *   - Session ids are validated before any job creation.
  *   - Skips sessions that already have a running extract job.
- *   - Cross-checks extract history to skip manually-extracted sessions.
  *
  * Read-this-with:
  *   - `src/extractJobs.ts` (createExtractJob — the job spawn mechanism).
  *   - `src/autoExtract.ts` (buildAutoExtractPrompt — the prompt builder).
  *   - `src/requirements.ts` (listRequirementsByProject, associations).
  *   - `src/sessions.ts` (scanSessions — SessionInfo with timestamps).
- *   - `src/extractHistory.ts` (getLastExtractForSession — skip check).
  *   - `src/experienceAutoSummary.ts` (the analogous background worker
  *     pattern for experience summaries).
  */
@@ -56,17 +57,22 @@ import {
   type JobMode,
 } from "./extractJobs.ts"
 import { buildAutoExtractPrompt, type ContextFiles } from "./autoExtract.ts"
-import { getLastExtractForSession } from "./extractHistory.ts"
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Minimum session age before the nightly sweep will extract it (1 hour). */
-export const MIN_SESSION_AGE_MS = 60 * 60 * 1000
-
-/** Retained for backward compatibility — no longer used in trigger logic. */
+/** 24 hours in milliseconds. */
 export const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
+
+/** Scheduler fires once per day at local 00:00. */
+export const DAILY_EXTRACT_HOUR = 0
+
+/** Recency window checked at each daily poll. */
+export const RECENT_SESSION_WINDOW_MS = TWENTY_FOUR_HOURS_MS
+
+/** Back-compat export for the schedulers page: next poll is daily. */
+export const POLL_INTERVAL_MS = TWENTY_FOUR_HOURS_MS
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,7 +83,7 @@ export interface ScheduleEntry {
   reqId: string
   /** When the session was created (ms epoch). Captured at bind time. */
   sessionCreatedAt: number
-  /** Whether the initial nightly extract has been done. */
+  /** Whether the initial 24h-after-creation extract has been done. */
   initialExtractDone: boolean
   /** Timestamp of the last auto-extract (ms epoch). Null if never. */
   lastExtractAt: number | null
@@ -152,23 +158,58 @@ async function saveStore(store: ScheduleStore): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the nightly sweep should extract this session.
+ * Whether the initial daily extract should fire.
  *
- * True when:
- *   - `initialExtractDone` is false, AND
- *   - the session is at least `MIN_SESSION_AGE_MS` old (or age is unknown)
- *
- * The 1-hour minimum prevents extracting brand-new sessions that likely
- * have too little content to be worth forking. Retroactive bindings
- * (sessionCreatedAt = 0 or very old) always qualify.
+ * The daily poll already filters to sessions created or updated in the
+ * last 24 hours, so this only checks whether the initial extract has
+ * been completed and whether we have a non-zero creation timestamp.
  */
 export function shouldTriggerInitial(
   entry: ScheduleEntry,
-  now: number = Date.now(),
 ): boolean {
   if (entry.initialExtractDone) return false
-  if (entry.sessionCreatedAt <= 0) return true
-  return now - entry.sessionCreatedAt >= MIN_SESSION_AGE_MS
+  if (entry.sessionCreatedAt <= 0) return false
+  return true
+}
+
+/**
+ * Whether periodic daily re-extract should fire.
+ *
+ * True when:
+ *   - the session's `updated` has advanced beyond `lastSessionUpdated`
+ *     (i.e. new content arrived)
+ *
+ * If `lastExtractAt` is null (never extracted), the initial-extract
+ * path handles it — this function returns false to avoid double-trigger.
+ */
+export function shouldTriggerPeriodic(
+  entry: ScheduleEntry,
+  sessionUpdated: number,
+): boolean {
+  if (entry.lastExtractAt === null) return false
+  if (entry.lastSessionUpdated === null) return true
+  return sessionUpdated > entry.lastSessionUpdated
+}
+
+/** True when a session was created or updated in the last 24 hours. */
+export function isSessionRecentForDailyWindow(
+  session: SessionInfo,
+  now: number = Date.now(),
+): boolean {
+  const latest = Math.max(session.updated || 0, session.created || 0)
+  if (latest <= 0) return false
+  return now - latest <= RECENT_SESSION_WINDOW_MS
+}
+
+/** Milliseconds until the next local occurrence of `hour` (0-23). */
+export function msUntilNextLocalHour(hour: number, now: Date = new Date()): number {
+  const h = Math.max(0, Math.min(23, Math.floor(hour)))
+  const next = new Date(now)
+  next.setHours(h, 0, 0, 0)
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1)
+  }
+  return next.getTime() - now.getTime()
 }
 
 // ---------------------------------------------------------------------------
@@ -241,14 +282,16 @@ async function readContextFiles(reqDir: string): Promise<ContextFiles> {
       return ""
     }
   }
-  const [meta, branch, config, test, notes] = await Promise.all([
+  const [meta, memory, branch, config, test, notes, review] = await Promise.all([
     readSafe("meta.md"),
+    readSafe("memory.md"),
     readSafe("branch.md"),
     readSafe("config-changes.md"),
     readSafe("test.md"),
     readSafe("notes.md"),
+    readSafe("review.md"),
   ])
-  return { meta, branch, config, test, notes }
+  return { meta, memory, branch, config, test, notes, review }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +328,7 @@ async function triggerAutoExtract(
       prompt,
       mode: "auto" as JobMode,
       model,
-      autoAdopt: true,
+      autoAdopt: false,
       reqDir: req.reqDir,
     })
   } catch {
@@ -300,79 +343,43 @@ async function triggerAutoExtract(
 }
 
 // ---------------------------------------------------------------------------
-// Midnight scheduling
-// ---------------------------------------------------------------------------
-
-/**
- * Calculate milliseconds until the next local midnight.
- *
- * Uses the system's local timezone (via `Date` constructors), so on a
- * machine in UTC+8, midnight is at 00:00 CST.
- */
-export function msUntilMidnight(now: number = Date.now()): number {
-  const date = new Date(now)
-  const nextMidnight = new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate() + 1, // tomorrow
-    0, 0, 0, 0, // 00:00:00.000 local
-  )
-  return nextMidnight.getTime() - now
-}
-
-// ---------------------------------------------------------------------------
 // Background worker
 // ---------------------------------------------------------------------------
 
 let _timer: ReturnType<typeof setTimeout> | null = null
-let _startupTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
- * Start the nightly scheduler. Fires at midnight (local time) each day.
- *
- * Also runs a startup poll 30 s after the server boots, to catch
- * sessions that should have been extracted while the dashboard was
- * down. Since extract history is the source of truth, this is safe —
- * already-extracted sessions won't be re-triggered.
+ * Start the background scheduler. Runs once per day at local midnight.
  *
  * Safe to call multiple times — if already running, does nothing.
- * Both timers are `unref`'d so they don't keep the process alive.
+ * The timer is `unref`'d so it doesn't keep the process alive.
  */
 export function startAutoExtractScheduler(): void {
   if (_timer) return
-
-  // Startup poll: catch missed midnight runs.
-  _startupTimer = setTimeout(() => {
-    void pollOnce().catch(() => {})
-  }, 30_000)
-  if (typeof _startupTimer.unref === "function") _startupTimer.unref()
-
-  // Schedule the recurring midnight poll.
-  scheduleNextMidnight()
+  scheduleNextDailyPoll()
 }
 
-function scheduleNextMidnight(): void {
-  const delay = msUntilMidnight()
+function scheduleNextDailyPoll(): void {
   _timer = setTimeout(() => {
-    void pollOnce().catch(() => {})
-    scheduleNextMidnight()
-  }, delay)
+    void pollOnce()
+      .catch(() => {})
+      .finally(() => {
+        _timer = null
+        scheduleNextDailyPoll()
+      })
+  }, msUntilNextLocalHour(DAILY_EXTRACT_HOUR))
   if (typeof _timer.unref === "function") _timer.unref()
 }
 
-/** Stop the nightly scheduler and clear the startup poll. */
+/** Stop the background scheduler. */
 export function stopAutoExtractScheduler(): void {
   if (_timer) {
-    clearTimeout(_timer)
+    clearInterval(_timer)
     _timer = null
-  }
-  if (_startupTimer) {
-    clearTimeout(_startupTimer)
-    _startupTimer = null
   }
 }
 
-/** Whether the scheduler is currently active. */
+/** Whether the scheduler interval is currently active. */
 export function isAutoExtractSchedulerRunning(): boolean {
   return _timer !== null
 }
@@ -383,13 +390,11 @@ export function isAutoExtractSchedulerRunning(): boolean {
  * Steps:
  *   1. Check the config toggle — bail if disabled.
  *   2. Load all requirements with their associated sessions.
- *   3. Force-scan sessions to get fresh `updated` timestamps.
+ *   3. Force-scan recent sessions to get fresh `updated` timestamps.
  *   4. Reconcile the schedule store (add new bindings, drop unbound).
- *   5. For each session, check if it has already been smart-extracted
- *      (via extract history cross-check). Skip if so.
- *   6. For un-extracted sessions that pass the minimum-age check,
- *      fire auto-extract jobs.
- *   7. Persist the updated schedule store.
+ *   5. For each recent session, check the two trigger conditions and fire
+ *      auto-extract jobs for those that qualify.
+ *   6. Persist the updated schedule store.
  */
 export async function pollOnce(): Promise<void> {
   const cfg = await getConfig()
@@ -403,7 +408,7 @@ export async function pollOnce(): Promise<void> {
   // No requirements — nothing to do.
   if (realReqs.length === 0) return
 
-  const sessions = await scanSessions(true)
+  const sessions = await scanSessions(true, RECENT_SESSION_WINDOW_MS)
   const sessionMap = new Map<string, SessionInfo>()
   for (const s of sessions) {
     sessionMap.set(s.id, s)
@@ -418,29 +423,24 @@ export async function pollOnce(): Promise<void> {
   for (const entry of Object.values(synced.sessions)) {
     const session = sessionMap.get(entry.sessionId)
     if (!session) continue
+    if (!isSessionRecentForDailyWindow(session, now)) continue
 
     // Find the requirement for this session.
     const req = realReqs.find((r) => r.id === entry.reqId)
     if (!req) continue
 
-    // Fast-path: if the schedule entry already says done, skip.
-    if (!shouldTriggerInitial(entry, now)) continue
+    const doInitial = shouldTriggerInitial(entry)
+    const doPeriodic = shouldTriggerPeriodic(
+      entry,
+      session.updated || session.created || 0,
+    )
 
-    // Source-of-truth cross-check: extract history records ALL successful
-    // extracts (including manual ones). If the session was already
-    // extracted, mark the entry as done and skip.
-    const lastExtract = await getLastExtractForSession(entry.sessionId)
-    if (lastExtract) {
-      entry.initialExtractDone = true
-      dirty = true
-      continue
-    }
+    if (!doInitial && !doPeriodic) continue
 
     const triggered = await triggerAutoExtract(entry, req, session, cfg.extractModel)
     if (triggered) {
-      // Don't set initialExtractDone here — the extract job is async and
-      // might fail. The next poll will check extract history and only
-      // mark done if the job actually succeeded.
+      // Update the entry to reflect that an extract has been started.
+      entry.initialExtractDone = true
       entry.lastExtractAt = now
       entry.lastSessionUpdated = session.updated || session.created || 0
       dirty = true

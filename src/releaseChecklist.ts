@@ -1,15 +1,18 @@
 /**
  * Release checklist parser — extracts structured deployment info from
- * the four Hermes-managed requirement files.
+ * the Hermes-managed requirement files.
  *
  * Role: when a requirement reaches "待上线" status, the dashboard needs
  * to surface a concise "上线检查" card. This module parses the
- * free-form Markdown in meta.md, branch.md, config-changes.md, and
- * test.md to populate four checklist sections:
+ * free-form Markdown in meta.md, branch.md, config-changes.md, test.md,
+ * notes.md, and review.md to populate deployment-readiness sections:
  *   1. 涉及应用 (applications)
  *   2. 涉及分支 (branches)
  *   3. 数据库变更 (DB table changes)
  *   4. Apollo/Nacos 配置变更 (config changes)
+ *   5. Topic / Group 创建 (cloud MQ changes)
+ *   6. 可复用验证链路 (repeatable verification chains)
+ *   7. 待上线 Review 结论 (review findings)
  *
  * Public surface:
  *   - buildReleaseChecklist(files): parse → ReleaseChecklist
@@ -28,6 +31,9 @@ export interface ReleaseChecklist {
   branches: { label: string; value: string }[]
   dbChanges: string[]
   configChanges: string[]
+  mqResources: string[]
+  verificationChains: string[]
+  reviewItems: string[]
   /** Any raw lines that look like release notes / 上线注意事项. */
   releaseNotes: string[]
 }
@@ -38,6 +44,7 @@ export interface ChecklistFiles {
   config?: string
   test?: string
   notes?: string
+  review?: string
 }
 
 /**
@@ -55,7 +62,10 @@ export function buildReleaseChecklist(files: ChecklistFiles): ReleaseChecklist {
     branches: extractBranches(files.branch ?? ""),
     dbChanges: extractDbChanges(files.config ?? ""),
     configChanges: extractConfigChanges(files.config ?? ""),
-    releaseNotes: extractReleaseNotes(files.notes ?? "", files.test ?? ""),
+    mqResources: extractMqResources(files.config ?? ""),
+    verificationChains: extractVerificationChains(files.test ?? ""),
+    reviewItems: extractReviewItems(files.review ?? ""),
+    releaseNotes: extractReleaseNotes(files.notes ?? "", files.test ?? "", files.review ?? ""),
   }
 }
 
@@ -179,8 +189,47 @@ function extractConfigChanges(config: string): string[] {
   return [...changes]
 }
 
+/** Extract RocketMQ/阿里云 Topic and Group creation work from config-changes.md. */
+function extractMqResources(config: string): string[] {
+  const resources = new Set<string>()
+  for (const line of config.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed || /^\|\s*-/.test(trimmed)) continue
+    if (/(topic|group|rocketmq|ons)|阿里云|创建/i.test(trimmed)) {
+      resources.add(trimmed)
+    }
+  }
+  return [...resources]
+}
+
+/** Extract reusable test/UAT verification chains from test.md. */
+function extractVerificationChains(test: string): string[] {
+  const chains = new Set<string>()
+  const section = test.match(/##\s*(?:可复用验证链路|验证链路|复验|UAT|回归)[\s\S]*?(?=\n##\s|$)/i)
+  if (!section) return []
+  for (const line of section[0].split("\n").slice(1)) {
+    const trimmed = line.trim()
+    if (!trimmed || /^\|\s*-/.test(trimmed) || trimmed.startsWith("#")) continue
+    chains.add(trimmed)
+  }
+  return [...chains]
+}
+
+/** Extract pending/confirmed code-review findings from review.md. */
+function extractReviewItems(review: string): string[] {
+  const items = new Set<string>()
+  const section = review.match(/##\s*(?:发现项|Review|Code Review|用户确认|复查)[\s\S]*?(?=\n##\s|$)/i)
+  if (!section) return []
+  for (const line of section[0].split("\n").slice(1)) {
+    const trimmed = line.trim()
+    if (!trimmed || /^\|\s*-/.test(trimmed) || trimmed.startsWith("#")) continue
+    items.add(trimmed)
+  }
+  return [...items]
+}
+
 /** Extract release notes / 上线注意事项 from notes.md and test.md. */
-function extractReleaseNotes(notes: string, test: string): string[] {
+function extractReleaseNotes(notes: string, test: string, review: string): string[] {
   const result: string[] = []
   // Look for "上线" / "部署" / "release" sections in notes
   const releaseSection = notes.match(/##\s*(?:上线|部署|release|发版|发布)[\s\S]*?(?=\n##\s|$)/i)
@@ -195,6 +244,14 @@ function extractReleaseNotes(notes: string, test: string): string[] {
   const cautionSection = test.match(/##\s*(?:注意|caution|rollback|回滚|风险)[\s\S]*?(?=\n##\s|$)/i)
   if (cautionSection) {
     const lines = cautionSection[0].split("\n").slice(1)
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith("#")) result.push(trimmed)
+    }
+  }
+  const reviewSection = review.match(/##\s*(?:用户确认|上线结论|Review 结论|复查结论)[\s\S]*?(?=\n##\s|$)/i)
+  if (reviewSection) {
+    const lines = reviewSection[0].split("\n").slice(1)
     for (const line of lines) {
       const trimmed = line.trim()
       if (trimmed && !trimmed.startsWith("#")) result.push(trimmed)

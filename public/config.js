@@ -26,6 +26,7 @@
     var data = {
       autoExtract: document.getElementById("cfg-auto-extract").checked,
       autoExtractSchedule: document.getElementById("cfg-auto-extract-schedule").checked,
+      fullSyncSchedule: document.getElementById("cfg-full-sync-schedule").checked,
       extractModel: document.getElementById("cfg-model").value.trim(),
       minChangeMessages: parseInt(document.getElementById("cfg-min-change").value, 10),
       autoValuation: document.getElementById("cfg-auto-valuation").checked,

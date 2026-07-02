@@ -12,8 +12,9 @@
 locally and point at the same machine's OpenCode data directory. It does
 two things:
 
-1. **Browse and drive OpenCode sessions.** `/` is an Operator-styled
-   dashboard. Click a lane to land on `/session?id=<ses_…>`, which spawns
+1. **Browse and drive requirements and OpenCode sessions.** `/` is the
+   Projects / Requirements backlog. `/sessions` is the Operator-styled
+   session dashboard. Click a lane to land on `/session?id=<ses_…>`, which spawns
    a real `opencode --session <id>` TUI inside a browser-embedded xterm.
 2. **Review experience-summary reports.** `/reports` lists Markdown
    candidates from `experience-summarizer` runs. `/report?path=…` shows
@@ -24,13 +25,17 @@ two things:
 
 | Path | Renders | Notes |
 | --- | --- | --- |
-| `GET /` | Sessions dashboard (Operator console) | Source chip top-right (`SQLITE / CLI / FS`) |
+| `GET /` | Projects / Requirements backlog | Reads Hermes `~/.agents/req/` |
+| `GET /sessions` | Sessions dashboard (Operator console) | Source chip top-right (`SQLITE / CLI / FS`) |
 | `GET /session?id=<ses_…>` | Embedded terminal page | 404 page if id not in the current scan |
+| `GET /projects` | Projects / Requirements backlog | Same renderer as `/` |
+| `GET /requirement?id=<req_…>` | Requirement detail page | Shows memory, release package, tests, review, and sessions |
 | `GET /sessions/refresh` | Same dashboard, force-rescan | Bypasses the 4 s cache |
 | `GET /reports` | Experience report card grid | |
 | `GET /report?path=…` | Report detail with candidate checkboxes | Path is gated by `resolveHandoffPath` |
 | `GET /api/sessions` | `{ summary, sessions[] }` JSON | |
 | `GET /api/session?id=…` | Single session JSON | |
+| `GET /api/requirements` | `{ requirements[] }` JSON | Requirement records with associated session ids |
 | `GET /api/reports` | `ReportSummary[]` JSON | |
 | `GET /api/report?path=…` | `ParsedReport` JSON | |
 | `POST /api/confirm` | `{ ok, savedPath, executionTriggered }` | Path gated by `resolveHandoffPath`; auto-triggers execution fork if report has a marker |
@@ -88,6 +93,37 @@ together. The other `src/*.ts` files import each other only when
 explicitly justified (e.g. `terminal.ts` re-exports
 `parseClientMessage` for runtime callers, and pulls `isValidSessionId`
 and `resolveCwd` from `sessions.ts`).
+
+**Requirement lifecycle memory.** Hermes requirement directories may
+contain these AI-facing files: `memory.md` (cross-session lifecycle
+memory), `background.md` (why/what), `branch.md` (release applications
+and branches), `config-changes.md` (DB / Apollo / Nacos / RocketMQ Topic
+and Group / cloud-console changes), `test.md` (test cases, self-test
+records, reusable verification chains), `notes.md` (append-only session
+notes), and `review.md` (pre-release code review findings and user
+decisions). New-session injection is memory-first. Scheduled smart
+extracts run once per day at local 00:00, only inspect sessions created
+or updated in the last 24 hours, and generate previewable changes instead
+of auto-adopting release facts. Experience auto-summary runs once per day
+at local 01:00 with the same 24-hour recent-session window.
+
+**Historical recall.** `/requirement/recall?reqId=…&sessionId=…` and
+`/api/session/transcript?id=…` read OpenCode SQLite directly through
+`src/sessionTranscript.ts`. Recall is text-only and bounded: it fetches
+`part.data.type === "text"` for one session, then filters out reasoning,
+tool calls, tool results, step markers, and non-text parts by never
+selecting them. Use it only when `memory.md` / `notes.md` do not answer
+a requirement question and the user or agent needs evidence from an old
+session.
+
+**OpenCode process queue.** Dashboard-owned, non-interactive OpenCode
+child processes go through `src/opencodeProcessQueue.ts`: requirement
+smart extracts, experience summary forks, execution forks, and new
+requirement-session creation. The queue allows at most six active
+OpenCode child processes at once and kills any one process after one
+hour. Requirement smart-extract still also has a per-requirement 5-minute
+delay queue so multiple historical sessions do not write the same
+requirement files concurrently.
 
 **Why `terminalProtocol.ts` is a separate file.** It is the only module
 that can be loaded on a host without a working PTY toolchain. Unit tests

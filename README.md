@@ -48,10 +48,11 @@ npm run typecheck
 
 | 路径 | 说明 |
 | --- | --- |
-| `/` | **Sessions** 仪表盘（默认落地页）。状态条 + session 列表 + 嵌入终端入口。 |
+| `/` | **Projects / Requirements** 需求管理默认页（从 Hermes `~/.agents/req/` 读取需求数据）。 |
+| `/sessions` | **Sessions** 仪表盘。状态条 + session 列表 + 嵌入终端入口。 |
 | `/session?id=<ses_...>` | 选中单个 session 的详情页，内嵌 xterm 终端直连 `opencode --session <id>`。 |
 | `/projects` | 需求管理页面（从 Hermes `~/.agents/req/` 读取需求数据，按项目分组展示）。 |
-| `/requirement?id=<req_...>` | 需求详情页（只读展示 Hermes 管理的需求元数据 + 关联 session）。 |
+| `/requirement?id=<req_...>` | 需求详情页（展示需求记忆、上线包、测试链路、Review、关联 session）。 |
 | `/reports` | Experience report 列表（原 `/` 路径平移到这里）。 |
 | `/report?path=...` | 单个 report 详情与 candidate 勾选/确认。 |
 | `/sessions/refresh` | 强制刷新 session 缓存后重新渲染列表。 |
@@ -66,6 +67,16 @@ npm run typecheck
 - 每条 session 一条 Operator lane：cyan rail、issue/run 标签、`Agent Run` 标题、`OpenCode {agent} thread is active.` 副标题、token 统计条、`CODEX THREAD / WORKTREE / MODEL / NEXT RETRY` 等 8 项详情网格。
 - 点击 lane 跳转到 `/session?id=<id>` 打开内嵌终端；`/session` 详情页同时展示 agent、model、worktree 元数据。
 - 数据来源在 header 右上角显示（`SQLITE / CLI / FS`）；横向滚动只在 ≥1080px 出现并被 2 列布局自动消除。
+
+### 需求生命周期记忆
+
+- 需求目录来自 Hermes `~/.agents/req/<project>/.../<req-id>/`，dashboard 只维护 session 关联和状态写入。
+- `memory.md` 是新建 session 的首要记忆入口：记录当前目标、当前进展、关键决策、已完成改动、待办/风险、影响范围和各 session 摘要索引。
+- `branch.md` 和 `config-changes.md` 构成上线包：应用/仓库/分支/PR/Commit、DB 变更、Apollo/Nacos、RocketMQ Topic/Group、阿里云控制台配置等。
+- `test.md` 维护 PRD/需求测试用例、自测记录和可复用验证链路，方便 test 自测后在 UAT/上线前复验。
+- `review.md` 维护待上线 Code Review 范围、发现项、用户确认和复查结论。
+- 「智能提取」会读取 `memory.md / branch.md / config-changes.md / test.md / notes.md / review.md` 并生成可预览的文件变更建议；人工确认后才写入发布事实文件。定时触发只在每天本地 00:00 执行一次，并且只检查最近 24 小时内创建或更新过的需求 session。
+- 「召回历史」会从本机 OpenCode SQLite 只读读取指定 session 的 text part，过滤 reasoning/tool/step，用于在需求信息不明确时追溯原始对话证据。
 
 ### 内嵌终端（核心点击流）
 
@@ -96,7 +107,7 @@ npm run typecheck
 
 ## Operator Sessions 页面
 
-`/` 重新设计为 Operator 风格：
+`/sessions` 使用 Operator 风格：
 
 - 顶部 thin console 顶栏：`OpenCode Operator | SNAPSHOT READY` + `SYSTEM LIGHT DARK REFRESH` 状态行；下接 `/sessions /requirements /reports` 路由行。
 - 顶部 flow 条：4 列 `BACKLOG / RUNNING / REPAIR / READY`（实际取 `stale / running / idle / total`），来自 `summarizeSessions`。
@@ -113,11 +124,24 @@ npm run typecheck
 - 报告详情页：候选卡片，支持勾选。
 - 确认/驳回：`POST /api/confirm`，结果写入 `/tmp/opencode/handoff/confirmations/`。
 
+### 自动同步
+
+- dashboard 启动后会保留唯一的自动同步机制：每天本地 20:30 运行一次 `opencode-cron-sync.sh --full`。
+- 旧的 systemd `opencode-sync-dirty.timer` / `opencode-sync-full.timer` 已改为远未来时间，不再负责高频自动同步。
+- `opencode-sync-reminder` 插件只负责记录 dirty paths 和失败提示，不再承诺在 `session.idle` 时自动同步。
+
+### OpenCode 进程队列
+
+- dashboard 启动的非交互 OpenCode 任务（智能提取、经验总结、确认候选执行、新建需求 session）统一进入全局队列。
+- 同一时间最多允许 6 个 dashboard-owned OpenCode 子进程活跃；超过上限的任务等待前面的任务结束后再启动。
+- 每个 dashboard-owned OpenCode 子进程最长活跃 1 小时，超时后会被强制终止并释放队列槽位。
+- 同一需求的自动智能提取仍保留 5 分钟间隔队列，避免多个历史 session 同时写同一组需求文件。
+
 ### Session 标记与自动总结
 
 用户在 OpenCode 中通过 `opencode-session-summary-mark` skill 标记有总结价值的 session 后，dashboard 后台自动完成：
 
-1. **等待空闲**：被标记 session 进入 idle 状态 ≥1 小时后触发。
+1. **每日检查**：每天本地 01:00 检查最近 24 小时内创建或更新过、且空闲 ≥1 小时的已标记 session。
 2. **Fork 总结**：自动 `opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
 3. **通知**：报告生成后在 dashboard 通知中心（🔔）弹出一键查看入口。
 4. **审阅确认**：用户在 `/reports` → `/report?path=...` 页面勾选候选。
@@ -132,243 +156,6 @@ API：
 | `POST` | `/api/experience/mark` | 标记 session（`{sessionId, note?}`） |
 | `POST` | `/api/experience/unmark` | 取消标记（`{sessionId}`） |
 | `GET` | `/api/experience/markers` | 列出所有标记及状态（`?status=<status>` 可选） |
-
-## Session 标记与自动经验总结
-
-用户可以通过 `opencode-session-summary-mark` skill 标记当前 session 为"待总结"。Dashboard 后台 worker 会：
-
-1. 每 5 分钟轮询标记队列（7 天窗口内、状态为 `marked` 的 session）。
-2. 检测到 session 空闲 ≥1 小时后，自动 `opencode run --session <id> --fork` 生成经验报告。
-3. 报告写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`，可在 `/reports` 页面查看。
-4. 用户在 `/report` 页面确认候选后，`POST /api/confirm` 自动检测关联 marker 并触发执行 fork，在副本 session 中执行确认的候选项。
-5. 全程通过 dashboard 通知中心（🔔）推送进度。
-
-标记 API：
-
-| 路由 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/experience/mark` | POST | 标记 session，body: `{"sessionId":"ses_...","note":"..."}` |
-| `/api/experience/unmark` | POST | 取消标记，body: `{"sessionId":"ses_..."}` |
-| `/api/experience/markers` | GET | 列出所有标记及状态 |
-
-标记存储：`~/.local/share/opencode-dashboard/experience-markers.json`
-
-## Session 标记与自动经验总结
-
-用户可以通过 OpenCode skill `opencode-session-summary-mark` 标记当前 session 为"待总结"，dashboard 后台会自动完成总结流程：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 写入标记到 `~/.local/share/opencode-dashboard/experience-markers.json`。
-2. **等待空闲**：后台 worker 每 5 分钟轮询，检测标记 session 空闲 ≥1 小时后触发总结。
-3. **Fork 总结**：执行 `opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：用户在 `/reports` 或 `/report?path=...` 页面查看候选，勾选确认。
-5. **Fork 执行**：确认后 `POST /api/confirm` 自动触发第二个 fork，执行确认的候选项。
-6. **通知**：每个状态转换通过 dashboard 通知中心（🔔）推送给用户。
-
-标记状态流转：`marked → summarizing → summarized → confirming → executed`（失败可重标记）。
-
-## Session 标记与自动经验总结
-
-用户可以通过 `opencode-session-summary-mark` skill 标记当前 session 为"待总结"，dashboard 后台会自动完成 fork 总结 → 报告审阅 → 确认执行的完整闭环。
-
-### 流程
-
-1. **标记**：用户在 OpenCode 中说"标记这个 session" → skill 调用 `POST /api/experience/mark`。
-2. **自动 fork 总结**：dashboard 后台 worker 每 5 分钟轮询标记队列，当 session 空闲 ≥1 小时后自动 `opencode run --session <id> --fork` 生成经验报告。
-3. **审阅**：报告写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`，在 `/reports` 页面可见，通知中心🔔推送完成提示。
-4. **确认执行**：用户在 `/report` 页面勾选候选并确认 → `POST /api/confirm` 自动检测关联 marker → 触发第二个 fork 执行确认候选。
-5. **状态追踪**：`GET /api/experience/markers` 返回所有标记及其状态（marked → summarizing → summarized → confirming → executed）。
-
-### API
-
-| 路由 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/experience/mark` | POST | 标记 session，body: `{"sessionId":"ses_...","note":"..."}` |
-| `/api/experience/unmark` | POST | 取消标记，body: `{"sessionId":"ses_..."}` |
-| `/api/experience/markers` | GET | 列出所有标记，可选 `?status=summarized` 过滤 |
-| `/api/confirm` | POST | 确认候选（扩展：自动触发关联 marker 的执行 fork） |
-
-### 标记存储
-
-标记持久化在 `~/.local/share/opencode-dashboard/experience-markers.json`，7 天 TTL（`summarizing`/`confirming` 状态豁免）。
-
-## Session 标记与自动经验总结
-
-用户可以在任意 OpenCode 会话中使用 `opencode-session-summary-mark` skill 标记当前 session 为"待总结"。Dashboard 后台 worker 会：
-
-1. **检测**：每 5 分钟轮询标记队列，检查 7 天内被标记且未处理的 session。
-2. **触发**：当 session 空闲 ≥1 小时后，自动 fork 该 session 并让 agent 生成经验报告。
-3. **通知**：报告生成后在 dashboard 通知中心（🔔）推送，用户点击进入 `/report?path=...` 审阅候选。
-4. **执行**：用户在 report 页面勾选确认候选后，`POST /api/confirm` 自动检测关联的 marker 并触发第二个 fork session 执行确认的候选。
-
-标记状态流转：`marked → summarizing → summarized → confirming → executed`（任何阶段可 `→ failed`）。
-
-| API | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/experience/mark` | POST | 标记 session，body: `{"sessionId":"ses_...","note":"..."}` |
-| `/api/experience/unmark` | POST | 取消标记，body: `{"sessionId":"ses_..."}` |
-| `/api/experience/markers` | GET | 列出所有标记及状态，可选 `?status=marked` |
-
-标记数据持久化在 `~/.local/share/opencode-dashboard/experience-markers.json`。
-
-## Session 标记与自动经验总结
-
-用户可以在任意 OpenCode 会话中使用 `opencode-session-summary-mark` skill 标记当前 session 为"待总结"。Dashboard 后台 worker 会：
-
-1. **轮询标记队列**（每 5 分钟），检查 7 天窗口内 status=`marked` 的 session。
-2. **等待空闲**：session 最后活动时间 ≥1 小时后，自动 fork 并生成经验报告。
-3. **通知用户**：报告生成后通过 dashboard 通知中心（🔔）推送，点击跳转 `/report?path=...`。
-4. **采纳执行**：用户在 `/report` 页面勾选候选并确认后，`POST /api/confirm` 自动检测关联的 marker，触发第二个 fork session 执行确认的候选项。
-
-状态流转：`marked → summarizing → summarized → confirming → executed`（任一步可 `→ failed`）。
-
-标记存储：`~/.local/share/opencode-dashboard/experience-markers.json`（7 天 TTL，活跃状态豁免）。
-
-API：
-
-| 路由 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/experience/mark` | POST | 标记 session（body: `{sessionId, note?}`） |
-| `/api/experience/unmark` | POST | 取消标记（body: `{sessionId}`） |
-| `/api/experience/markers` | GET | 列出所有标记及状态（`?status=<status>` 过滤） |
-
-## Session 标记与自动经验总结
-
-用户在 OpenCode 会话中通过 `opencode-session-summary-mark` skill 标记有价值的 session 后，dashboard 后台自动完成总结全流程：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 写入标记（持久化到 `~/.local/share/opencode-dashboard/experience-markers.json`）。
-2. **等待空闲**：后台 worker 每 5 分钟轮询，检测到标记 session 空闲 ≥1 小时后触发。
-3. **Fork 总结**：`opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：报告出现在 `/reports` 页面，用户勾选确认候选。
-5. **Fork 执行**：`POST /api/confirm` 检测到关联标记后，自动 fork 执行确认的候选。
-6. **通知**：每个状态转换通过通知中心（🔔）推送给用户。
-
-标记状态机：`marked → summarizing → summarized → confirming → executed`（任一步可 `→ failed`）。
-
-## Session 标记与自动经验总结
-
-用户可以通过 `opencode-session-summary-mark` skill 或直接调用 API 标记一个 session 为"待经验总结"：
-
-```bash
-# 标记 session
-curl -X POST http://localhost:7331/api/experience/mark \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId": "ses_xxx", "note": "MQ 幂等问题排查"}'
-
-# 查看所有标记
-curl http://localhost:7331/api/experience/markers
-
-# 取消标记
-curl -X POST http://localhost:7331/api/experience/unmark \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId": "ses_xxx"}'
-```
-
-标记后的自动流程：
-
-1. **等待空闲**：后台 worker（每 5 分钟轮询）检测到被标记 session 空闲 ≥1 小时后触发总结。
-2. **Fork 总结**：自动 fork session，让 agent 按经验总结格式生成报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-3. **用户审阅**：报告出现在 `/reports` 页面，用户勾选要采纳的候选。
-4. **确认执行**：点击 Confirm 后，`/api/confirm` 检测到关联的 marker，自动 fork session 执行确认的候选项。
-5. **通知推送**：每个阶段（总结中/完成/执行中/完成/失败）都通过 dashboard 通知中心（🔔）推送状态。
-
-标记状态流转：`marked → summarizing → summarized → confirming → executed`（任何阶段失败进入 `failed`）。
-
-## Session 标记与自动经验总结
-
-用户可以在任意 OpenCode 会话中说"标记这个 session"或"标记总结"，触发 `opencode-session-summary-mark` skill 调用 `POST /api/experience/mark`，把当前 session 写入 dashboard 的标记队列。
-
-Dashboard 后台 worker 每 5 分钟轮询标记队列：
-
-1. **7 天窗口**：标记超过 7 天未完成的 marker 自动标记为 `expired`。
-2. **空闲 1 小时**：被标记 session 的 `time_updated` 距今 ≥1 小时时，自动 fork 该 session 并让 agent 生成经验报告（写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`）。
-3. **报告审阅**：报告生成后出现在 `/reports` 列表页，用户在 `/report?path=...` 页面查看候选、勾选确认。
-4. **采纳执行**：用户点击 "Confirm Selected" 后，`POST /api/confirm` 检测到报告有关联的 marker，自动 fork 原 session 执行确认的候选（调用 writer/maintainer skill）。
-5. **通知**：fork 进度的 starting/done/failed 状态通过 dashboard 通知中心（🔔）推送。
-
-Marker 状态机：`marked → summarizing → summarized → confirming → executed`（任一步可 `→ failed`）。
-
-API 路由：
-
-| 路由 | 方法 | 说明 |
-| --- | --- | --- |
-| `/api/experience/mark` | POST | 标记 session，body: `{"sessionId": "...", "note": "..."}` |
-| `/api/experience/unmark` | POST | 取消标记，body: `{"sessionId": "..."}` |
-| `/api/experience/markers` | GET | 列出所有标记及状态，支持 `?status=marked` 过滤 |
-
-## Session 标记与自动经验总结
-
-用户在 OpenCode 中通过 `opencode-session-summary-mark` skill 标记有价值的 session 后，dashboard 后台自动完成"fork → 生成报告 → 审阅 → 确认 → 执行"闭环：
-
-1. **标记**：skill 调用 `POST /api/experience/mark`，session 进入 `marked` 状态。
-2. **自动 fork**：后台 worker 每 5 分钟轮询；session 空闲 ≥1 小时后自动 fork 生成经验报告（`summarizing` → `summarized`）。
-3. **审阅**：报告出现在 `/reports` 页面，用户勾选候选。
-4. **确认执行**：`POST /api/confirm` 检测到关联 marker 后，自动 fork 执行确认的候选（`confirming` → `executed`）。
-5. **通知**：每个状态转换都推送 dashboard 通知中心（🔔）。
-
-标记存储在 `~/.local/share/opencode-dashboard/experience-markers.json`，7 天后未完成的标记自动过期。
-
-## Session 标记与自动经验总结
-
-用户可以通过 OpenCode skill（`opencode-session-summary-mark`）标记当前 session 为"待总结"。Dashboard 后台 worker 会自动处理：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 把 session ID 写入 `~/.local/share/opencode-dashboard/experience-markers.json`。
-2. **等待空闲**：后台 worker 每 5 分钟轮询标记队列，检测到 session 空闲 ≥1 小时后触发 fork。
-3. **Fork 总结**：`opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：报告出现在 `/reports` 列表，用户在 `/report?path=...` 页面查看候选并勾选。
-5. **采纳执行**：用户点击「Confirm Selected」后，`POST /api/confirm` 检测到关联 marker，自动 fork session 执行确认的候选项。
-6. **通知**：fork 进度（开始/完成/失败）通过 dashboard 通知中心（🔔）推送。
-
-标记状态流转：`marked → summarizing → summarized → confirming → executed`（任一步可 → `failed`）。
-
-## Session 标记与自动经验总结
-
-用户在任意 OpenCode 会话中通过 `opencode-session-summary-mark` skill 标记当前 session 后，dashboard 后台自动完成以下流程：
-
-1. **标记**：`POST /api/experience/mark` 写入标记（`~/.local/share/opencode-dashboard/experience-markers.json`）。
-2. **等待空闲**：后台 worker 每 5 分钟轮询，检测到 session 空闲 ≥1 小时后触发总结。
-3. **Fork 总结**：`opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：报告出现在 `/reports` 页面，用户勾选候选。
-5. **确认执行**：`POST /api/confirm` 检测到关联 marker 后自动 fork 执行确认候选，执行 fork 继承用户全局权限规则。
-6. **通知**：整个流程的每个状态转换都通过 dashboard 通知中心（🔔）推送。
-
-标记状态：`marked → summarizing → summarized → confirming → executed`（任何阶段可 `→ failed`）。7 天未完成自动过期。
-
-## Session 标记与自动经验总结
-
-用户在 OpenCode 会话中使用 `opencode-session-summary-mark` skill 标记当前 session 后，dashboard 后台自动完成以下流程：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 写入标记队列。
-2. **等待空闲**：后台 worker 每 5 分钟轮询，检测 session 空闲 ≥1 小时后触发总结。
-3. **Fork 总结**：`opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：用户在 `/reports` 页面查看候选，勾选确认。
-5. **Fork 执行**：`POST /api/confirm` 检测到关联 marker 后，自动 fork session 执行确认的候选。
-
-标记状态存储在 `~/.local/share/opencode-dashboard/experience-markers.json`，7 天后自动过期。
-
-## Session 标记与自动经验总结
-
-用户在 OpenCode 会话中觉得某个 session 有总结价值时，可以通过 `opencode-session-summary-mark` skill 标记该 session。Dashboard 后台 worker 会自动处理后续流程：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 把 session ID 写入标记队列（`~/.local/share/opencode-dashboard/experience-markers.json`）。
-2. **等待空闲**：后台 worker 每 5 分钟轮询标记队列，检测到 session 空闲 ≥1 小时后触发总结。
-3. **Fork 总结**：自动执行 `opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：报告出现在 `/reports` 页面，用户勾选确认候选。
-5. **Fork 执行**：用户点击确认后，`POST /api/confirm` 自动检测关联标记并触发第二个 fork 执行确认的候选项。
-6. **通知**：每个状态转换（开始总结/完成/失败/开始执行/执行完成）都通过通知中心（🔔）推送给用户。
-
-标记队列有 7 天 TTL：超过 7 天未完成的标记自动过期。
-
-## Session 标记与自动经验总结
-
-用户在 OpenCode 中使用 `opencode-session-summary-mark` skill 标记有价值的 session 后，dashboard 后台自动完成以下流程：
-
-1. **标记**：skill 调用 `POST /api/experience/mark` 写入标记到 `~/.local/share/opencode-dashboard/experience-markers.json`。
-2. **等待空闲**：后台 worker 每 5 分钟轮询，检测标记 session 是否空闲 ≥1 小时。
-3. **Fork 总结**：空闲达标后自动 `opencode run --session <id> --fork` 生成经验报告，写入 `/tmp/opencode/handoff/auto-summary/<sid>/report.md`。
-4. **审阅**：报告出现在 `/reports` 页面，用户勾选确认候选。
-5. **Fork 执行**：`POST /api/confirm` 检测到关联 marker 后自动触发执行 fork，让 agent 执行确认的候选项。
-
-标记状态流转：`marked → summarizing → summarized → confirming → executed`（任一阶段可 `failed`）。7 天未完成自动过期。
 
 ## 目录结构
 

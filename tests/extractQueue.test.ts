@@ -36,6 +36,11 @@ function makeOpts(reqId: string, sessionId: string) {
   return { reqId, sessionId, prompt: "test prompt", model: "test-model" }
 }
 
+function makeAutoAdoptOpts(reqId: string, sessionId: string) {
+  const reqDir = mkdtempSync(join(tmpdir(), "queue-autoadopt-"))
+  return { ...makeOpts(reqId, sessionId), autoAdopt: true, reqDir }
+}
+
 test("enqueueAutoExtract: first request fires immediately", () => {
   _resetExtractQueueForTest()
   _resetExtractJobs()
@@ -45,6 +50,17 @@ test("enqueueAutoExtract: first request fires immediately", () => {
   const job = getExtractJob(result.jobId!)
   assert.ok(job)
   assert.equal(job!.sessionId, "ses_q1_aaaaaaaa")
+})
+
+test("enqueueAutoExtract: forwards autoAdopt options to immediate jobs", () => {
+  _resetExtractQueueForTest()
+  _resetExtractJobs()
+  const result = enqueueAutoExtract(makeAutoAdoptOpts("req-q1-adopt", "ses_q1_adoptaaaaa"))
+  assert.equal(result.status, "immediate")
+  const job = getExtractJob(result.jobId!)
+  assert.ok(job)
+  assert.equal(job!.autoAdopt, true)
+  assert.ok(job!.reqDir)
 })
 
 test("enqueueAutoExtract: second request within gap is queued", () => {

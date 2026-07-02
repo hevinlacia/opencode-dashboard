@@ -60,6 +60,8 @@ export interface Requirement {
   testPath?: string
   notesPath?: string
   configPath?: string
+  memoryPath?: string
+  reviewPath?: string
   /**
    * Directory holding this requirement's files. Stored on the record so
    * the status-write API can locate `state.json` without re-deriving the
@@ -346,6 +348,8 @@ async function loadRequirementFromDir(
   const testPath = join(dirPath, "test.md")
   const notesPath = join(dirPath, "notes.md")
   const configPath = join(dirPath, "config-changes.md")
+  const memoryPath = join(dirPath, "memory.md")
+  const reviewPath = join(dirPath, "review.md")
 
   let title = dirName
   let status: ReqStatus = "开发中"
@@ -414,6 +418,8 @@ async function loadRequirementFromDir(
     testPath: existsSync(testPath) ? testPath : undefined,
     notesPath: existsSync(notesPath) ? notesPath : undefined,
     configPath: existsSync(configPath) ? configPath : undefined,
+    memoryPath: existsSync(memoryPath) ? memoryPath : undefined,
+    reviewPath: existsSync(reviewPath) ? reviewPath : undefined,
     reqDir: dirPath,
     parentReqId,
   }
@@ -820,20 +826,23 @@ async function readFileSnippet(path: string | undefined, limit = 500): Promise<s
 
 /**
  * Build the agent-context preamble injected into a session that is bound
- * to a Hermes requirement. The output is concise, background-first:
+ * to a Hermes requirement. The output is concise, memory-first:
  *   1. requirement title + status (always)
- *   2. background.md content (up to 500 chars) — the why/what of the work
- *   3. notes.md (current progress, up to 300 chars)
- *   4. branch.md (branch / commit context, up to 300 chars)
- *   5. absolute paths to all five known files so the agent knows where
+ *   2. memory.md content (up to 1,200 chars) — the lifecycle memory ledger
+ *   3. background.md content (up to 500 chars) — the why/what of the work
+ *   4. notes.md (current progress, up to 300 chars)
+ *   5. branch.md (branch / commit context, up to 300 chars)
+ *   6. absolute paths to all seven known files so the agent knows where
  *      to read further or write updates
- *   6. a closing line that tells the agent NOT to start work and to wait
+ *   7. a routing guide that tells the agent which file is authoritative
+ *      for release/test/review work
+ *   8. a closing line that tells the agent NOT to start work and to wait
  *      for the user to issue the next instruction
  *
- * test.md and config-changes.md are listed by path but their bodies are
- * NOT inlined — the agent can read them on demand once the user gives it
- * a concrete task. Files that do not exist on disk are still listed by
- * path (the agent may create them).
+ * test.md, config-changes.md, and review.md are listed by path but their
+ * bodies are NOT inlined — the agent can read them on demand once the
+ * user gives it a concrete task. Files that do not exist on disk are
+ * still listed by path (the agent may create them).
  *
  * The DEFAULT_REQ_ID / "req not found" fallbacks return a minimal
  * 4-line block that only carries the new closing instruction.
@@ -872,6 +881,17 @@ export async function buildInjectionContext(reqId: string): Promise<string> {
     const notesFile = req.notesPath ?? join(req.reqDir, "notes.md")
     const testFile = req.testPath ?? join(req.reqDir, "test.md")
     const configFile = req.configPath ?? join(req.reqDir, "config-changes.md")
+    const memoryFile = req.memoryPath ?? join(req.reqDir, "memory.md")
+    const reviewFile = req.reviewPath ?? join(req.reqDir, "review.md")
+
+    lines.push("")
+    lines.push("需求记忆：")
+    const memory = await readFileSnippet(memoryFile, 1200)
+    if (memory) {
+      lines.push(memory)
+    } else {
+      lines.push(`（未提供 memory.md，路径：${memoryFile}。这是跨 session 的需求生命周期记忆入口。）`)
+    }
 
     lines.push("")
     lines.push("需求背景：")
@@ -902,11 +922,21 @@ export async function buildInjectionContext(reqId: string): Promise<string> {
 
     lines.push("")
     lines.push("需求文件：")
+    lines.push(`  - 需求记忆：${memoryFile}`)
     lines.push(`  - 需求背景：${backgroundFile}`)
     lines.push(`  - 分支信息：${branchFile}`)
     lines.push(`  - 开发笔记：${notesFile}`)
     lines.push(`  - 测试范围：${testFile}`)
     lines.push(`  - 配置变更：${configFile}`)
+    lines.push(`  - 上线 Review：${reviewFile}`)
+
+    lines.push("")
+    lines.push("AI 路由说明：")
+    lines.push("  - 新 session 先读 memory.md，必要时再读 notes.md 追溯历史 session。")
+    lines.push("  - 上线清单以 branch.md、config-changes.md、test.md、review.md 为准。")
+    lines.push("  - 测试用例和可复用验证链路维护在 test.md。")
+    lines.push("  - 待上线 code review 记录维护在 review.md。")
+    lines.push("  - 状态只通过 dashboard/API 更新，不直接改 state.json。")
   } else {
     // No reqDir on the record (should not happen for real Hermes
     // requirements, but stays defensive): fall back to the old behavior.

@@ -2,25 +2,31 @@
  * Tests for `src/autoExtractScheduler.ts`.
  *
  * Covers:
- *   - shouldTriggerInitial: 1h minimum age, already done, unknown createdAt
- *   - msUntilMidnight: delay calculation correctness
+ *   - shouldTriggerInitial: not yet extracted, already done, missing createdAt
+ *   - shouldTriggerPeriodic: updated changed, never extracted
+ *   - daily helpers: local midnight delay and recent-session window
  *   - syncSchedule: add new bindings, remove unbound, update reqId
+ *   - pollOnce: respects config toggle, triggers initial extract, skips running jobs
  */
 
 import { test } from "node:test"
 import { strict as assert } from "node:assert"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
   shouldTriggerInitial,
+  shouldTriggerPeriodic,
   syncSchedule,
-  msUntilMidnight,
-  MIN_SESSION_AGE_MS,
   TWENTY_FOUR_HOURS_MS,
+  isSessionRecentForDailyWindow,
+  msUntilNextLocalHour,
   _resetForTest,
 } from "../src/autoExtractScheduler.ts"
+import { _resetForTest as _resetConfig } from "../src/config.ts"
+import { _resetForTest as _resetNotifications } from "../src/notifications.ts"
+import { _resetExtractJobs } from "../src/extractJobs.ts"
 import type { ScheduleEntry } from "../src/autoExtractScheduler.ts"
 import type { Requirement } from "../src/requirements.ts"
 import type { SessionInfo } from "../src/sessions.ts"
@@ -33,11 +39,19 @@ function tmpJsonPath(): string {
   return join(mkdtempSync(join(tmpdir(), "opencode-sched-")), "schedule.json")
 }
 
+function tmpConfigPath(): string {
+  return join(mkdtempSync(join(tmpdir(), "opencode-sched-cfg-")), "config.json")
+}
+
+function tmpNotifPath(): string {
+  return join(mkdtempSync(join(tmpdir(), "opencode-sched-notif-")), "notifications.json")
+}
+
 function makeEntry(overrides: Partial<ScheduleEntry> = {}): ScheduleEntry {
   return {
     sessionId: "ses_aaaaaaaaaaaaaaaa",
     reqId: "WMS-001",
-    sessionCreatedAt: Date.now() - MIN_SESSION_AGE_MS - 1000,
+    sessionCreatedAt: Date.now() - TWENTY_FOUR_HOURS_MS - 1000,
     initialExtractDone: false,
     lastExtractAt: null,
     lastSessionUpdated: null,
@@ -49,7 +63,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: "ses_aaaaaaaaaaaaaaaa",
     title: "test",
-    created: Date.now() - MIN_SESSION_AGE_MS - 1000,
+    created: Date.now() - TWENTY_FOUR_HOURS_MS - 1000,
     updated: Date.now(),
     projectId: "WMS",
     directory: "",
@@ -79,14 +93,9 @@ function makeRequirement(overrides: Partial<Requirement> = {}): Requirement {
 // shouldTriggerInitial
 // ---------------------------------------------------------------------------
 
-test("shouldTriggerInitial: true when session is older than 1h and not done", () => {
-  const entry = makeEntry({ sessionCreatedAt: Date.now() - MIN_SESSION_AGE_MS - 1 })
+test("shouldTriggerInitial: true when not done and createdAt exists", () => {
+  const entry = makeEntry({ sessionCreatedAt: Date.now() })
   assert.ok(shouldTriggerInitial(entry))
-})
-
-test("shouldTriggerInitial: false when session is younger than 1h", () => {
-  const entry = makeEntry({ sessionCreatedAt: Date.now() - 60_000 })
-  assert.ok(!shouldTriggerInitial(entry))
 })
 
 test("shouldTriggerInitial: false when already done", () => {
@@ -94,59 +103,69 @@ test("shouldTriggerInitial: false when already done", () => {
   assert.ok(!shouldTriggerInitial(entry))
 })
 
-test("shouldTriggerInitial: true when createdAt is 0 (unknown age)", () => {
+test("shouldTriggerInitial: false when createdAt is 0", () => {
   const entry = makeEntry({ sessionCreatedAt: 0 })
-  assert.ok(shouldTriggerInitial(entry))
-})
-
-test("shouldTriggerInitial: true when session created long ago (retroactive binding)", () => {
-  const entry = makeEntry({ sessionCreatedAt: Date.now() - 7 * 24 * 60 * 60 * 1000 })
-  assert.ok(shouldTriggerInitial(entry))
-})
-
-test("shouldTriggerInitial: true at exact 1h boundary", () => {
-  const entry = makeEntry({ sessionCreatedAt: Date.now() - MIN_SESSION_AGE_MS })
-  assert.ok(shouldTriggerInitial(entry))
+  assert.ok(!shouldTriggerInitial(entry))
 })
 
 // ---------------------------------------------------------------------------
-// msUntilMidnight
+// shouldTriggerPeriodic
 // ---------------------------------------------------------------------------
 
-test("msUntilMidnight: returns positive value", () => {
-  const delay = msUntilMidnight()
-  assert.ok(delay > 0, "delay should be positive")
-  assert.ok(delay <= 24 * 60 * 60 * 1000, "delay should not exceed 24h")
+test("shouldTriggerPeriodic: true when session updated", () => {
+  const entry = makeEntry({
+    initialExtractDone: true,
+    lastExtractAt: Date.now() - 60_000,
+    lastSessionUpdated: Date.now() - TWENTY_FOUR_HOURS_MS,
+  })
+  const sessionUpdated = Date.now() - 1000
+  assert.ok(shouldTriggerPeriodic(entry, sessionUpdated))
 })
 
-test("msUntilMidnight: at 23:59, delay is about 1 minute", () => {
-  // Construct a date at 23:59:00 local time today.
-  const now = new Date()
-  const nearMidnight = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    23, 59, 0, 0,
-  ).getTime()
-  const delay = msUntilMidnight(nearMidnight)
-  // Should be about 60 seconds (allow small tolerance for test execution).
-  assert.ok(delay > 50_000 && delay < 70_000, `expected ~60s, got ${delay}ms`)
+test("shouldTriggerPeriodic: false when session not updated", () => {
+  const ts = Date.now() - 1000
+  const entry = makeEntry({
+    initialExtractDone: true,
+    lastExtractAt: Date.now() - TWENTY_FOUR_HOURS_MS - 1000,
+    lastSessionUpdated: ts,
+  })
+  assert.ok(!shouldTriggerPeriodic(entry, ts))
 })
 
-test("msUntilMidnight: at 00:00:01, delay is about 24h minus 1s", () => {
-  const now = new Date()
-  const justAfterMidnight = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    0, 0, 1, 0,
-  ).getTime()
-  const delay = msUntilMidnight(justAfterMidnight)
-  const expected = 24 * 60 * 60 * 1000 - 1000
-  assert.ok(
-    Math.abs(delay - expected) < 1000,
-    `expected ~${expected}ms, got ${delay}ms`,
-  )
+test("shouldTriggerPeriodic: false when never extracted (lastExtractAt null)", () => {
+  const entry = makeEntry({ lastExtractAt: null })
+  assert.ok(!shouldTriggerPeriodic(entry, Date.now()))
+})
+
+test("shouldTriggerPeriodic: true when lastSessionUpdated is null but 24h passed", () => {
+  const entry = makeEntry({
+    initialExtractDone: true,
+    lastExtractAt: Date.now() - TWENTY_FOUR_HOURS_MS - 1000,
+    lastSessionUpdated: null,
+  })
+  assert.ok(shouldTriggerPeriodic(entry, Date.now()))
+})
+
+test("isSessionRecentForDailyWindow: true when updated within 24h", () => {
+  const now = Date.now()
+  const session = makeSession({ created: now - 7 * TWENTY_FOUR_HOURS_MS, updated: now - 60_000 })
+  assert.equal(isSessionRecentForDailyWindow(session, now), true)
+})
+
+test("isSessionRecentForDailyWindow: false when created and updated are older than 24h", () => {
+  const now = Date.now()
+  const session = makeSession({ created: now - 2 * TWENTY_FOUR_HOURS_MS, updated: now - TWENTY_FOUR_HOURS_MS - 1 })
+  assert.equal(isSessionRecentForDailyWindow(session, now), false)
+})
+
+test("msUntilNextLocalHour: returns same-day delay before target hour", () => {
+  const now = new Date(2026, 6, 1, 23, 30, 0, 0)
+  assert.equal(msUntilNextLocalHour(0, now), 30 * 60 * 1000)
+})
+
+test("msUntilNextLocalHour: rolls to next day after target hour", () => {
+  const now = new Date(2026, 6, 1, 0, 1, 0, 0)
+  assert.equal(msUntilNextLocalHour(0, now), (23 * 60 + 59) * 60 * 1000)
 })
 
 // ---------------------------------------------------------------------------
